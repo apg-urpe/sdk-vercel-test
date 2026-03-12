@@ -29,6 +29,10 @@ import { getCalendars, getEvents, createEvent, updateEvent, deleteEvent } from "
 // Cache
 const calendariosCache = new Map();
 
+// ⚠️ MODO TEST: Solo permitir operaciones con Luis Villegas (id=154)
+// Cambiar a null para permitir todos los asesores
+const ASESOR_TEST_ID = 154;
+
 // Funciones auxiliares
 function getAhoraEnTimezone(timezone) {
   const ahora = new Date();
@@ -46,7 +50,7 @@ function getAhoraEnTimezone(timezone) {
   );
 }
 
-async function getAsesorByContactoId(contactoId) {
+async function getAsesorByContactoId(contactoId, requireTestMode = false) {
   // Buscar el asesor asignado al contacto
   const { data: contacto } = await supabase
     .from("wp_contactos")
@@ -55,6 +59,11 @@ async function getAsesorByContactoId(contactoId) {
     .single();
   
   if (!contacto?.asesor_id) return null;
+  
+  // ⚠️ MODO TEST: Verificar si el asesor es Luis Villegas
+  if (ASESOR_TEST_ID && requireTestMode && contacto.asesor_id !== ASESOR_TEST_ID) {
+    return { blocked: true, message: `⚠️ Modo test activo: Solo se permiten operaciones con el asesor de prueba (ID: ${ASESOR_TEST_ID})` };
+  }
   
   const { data: asesor } = await supabase
     .from("wp_team_humano")
@@ -216,8 +225,9 @@ async function crearEventoCalendario(params) {
   const { start, attendeeEmail, summary, description, contacto_id, "Virtual-presencial": modalidad, time_zone_contacto } = params;
   const timezone = time_zone_contacto || "America/Bogota";
 
-  const asesor = await getAsesorByContactoId(contacto_id);
+  const asesor = await getAsesorByContactoId(contacto_id, true); // requireTestMode = true
   if (!asesor) return { error: "No se encontró asesor asignado al contacto" };
+  if (asesor.blocked) return { error: asesor.message };
   if (!asesor.grant_id || asesor.grant_id === "Solicitud enviada") {
     return { error: "El asesor no tiene calendario configurado" };
   }
@@ -262,8 +272,9 @@ async function reagendarEvento(params) {
   const { event_id, start, attendeeEmail, summary, description, contacto_id, "Virtual-presencial": modalidad, time_zone_contacto, Duracion_minutos } = params;
   const timezone = time_zone_contacto || "America/Bogota";
 
-  const asesor = await getAsesorByContactoId(contacto_id);
+  const asesor = await getAsesorByContactoId(contacto_id, true); // requireTestMode = true
   if (!asesor) return { error: "No se encontró asesor asignado al contacto" };
+  if (asesor.blocked) return { error: asesor.message };
   if (!asesor.grant_id || asesor.grant_id === "Solicitud enviada") {
     return { error: "El asesor no tiene calendario configurado" };
   }
@@ -305,8 +316,9 @@ async function reagendarEvento(params) {
 // TOOL 4: Eliminar_Evento (adicional)
 // ============================================
 async function eliminarEvento(eventId, contactoId) {
-  const asesor = await getAsesorByContactoId(contactoId);
+  const asesor = await getAsesorByContactoId(contactoId, true); // requireTestMode = true
   if (!asesor) return { error: "No se encontró asesor asignado al contacto" };
+  if (asesor.blocked) return { error: asesor.message };
   if (!asesor.grant_id || asesor.grant_id === "Solicitud enviada") {
     return { error: "El asesor no tiene calendario configurado" };
   }
