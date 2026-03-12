@@ -1,0 +1,26 @@
+{
+  "name": "scheduling-agent-mcp",
+  "version": "1.0.0",
+  "description": "MCP Server para agendamiento con Nylas y Supabase",
+  "type": "module",
+  "main": "src/mcp-server.js",
+  "bin": {
+    "scheduling-agent": "./src/mcp-server.js"
+  },
+  "scripts": {
+    "start": "node src/mcp-server.js",
+    "chat": "node src/chat.js",
+    "dev": "node --watch src/chat.js"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@supabase/supabase-js": "^2.45.0",
+    "ai": "^4.0.0",
+    "dotenv": "^16.4.5",
+    "zod": "^3.23.8"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
