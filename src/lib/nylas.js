@@ -48,6 +48,34 @@ export async function getFreeBusy(grantId, email, startTime, endTime) {
 }
 
 /**
+ * Obtiene disponibilidad de MÚLTIPLES participantes en UNA sola llamada
+ * @param {string} grantId - Grant ID (cualquiera válido)
+ * @param {Array} participants - Array de {email, calendar_ids}
+ * @param {number} startTime - Unix timestamp inicio
+ * @param {number} endTime - Unix timestamp fin
+ * @param {number} durationMinutes - Duración de la cita
+ */
+export async function getAvailability(grantId, participants, startTime, endTime, durationMinutes = 30) {
+  const result = await nylasRequest(`/v3/grants/${grantId}/calendars/availability`, {
+    method: "POST",
+    body: JSON.stringify({
+      start_time: startTime,
+      end_time: endTime,
+      duration_minutes: durationMinutes,
+      interval_minutes: durationMinutes,
+      participants: participants.map(p => ({
+        email: p.email,
+        calendar_ids: ["primary"]
+      })),
+      availability_rules: {
+        availability_method: "max-availability"
+      }
+    }),
+  });
+  return result.data;
+}
+
+/**
  * Lista los calendarios de un asesor
  * @param {string} grantId - Grant ID del asesor
  */
