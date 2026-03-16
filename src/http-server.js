@@ -91,15 +91,18 @@ async function getAsesoresByEmpresaId(empresaId) {
 }
 
 async function getCitaContacto(contactoId) {
-  // Buscar la cita más reciente del contacto (no cancelada)
-  const { data: cita, error: citaError } = await supabase
+  // Buscar la cita más reciente del contacto (cualquier estado excepto cancelada)
+  const { data: citas, error: citaError } = await supabase
     .from("wp_citas")
     .select("id, fecha_hora, titulo, ubicacion, estado, team_humano_id, empresa_id, event_id")
     .eq("contacto_id", contactoId)
-    .neq("estado", "cancelada")
     .order("fecha_hora", { ascending: false })
-    .limit(1)
-    .single();
+    .limit(5);
+  
+  // Filtrar: preferir pendiente, luego cualquier otra que no sea cancelada
+  const cita = citas?.find(c => c.estado === "pendiente") 
+    || citas?.find(c => c.estado !== "cancelada") 
+    || citas?.[0];
   
   if (citaError || !cita) {
     return {
