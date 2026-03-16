@@ -245,7 +245,6 @@ async function disponibilidadAgenda(empresaId, timeZoneContacto) {
 
   const ahora = getAhoraEnTimezone(timezone);
   const disponibilidadDias = [];
-  const asesoresInfo = asesores.map(a => `${a.nombre} ${a.apellido}`);
 
   // Consolidar disponibilidad de todos los asesores
   for (let i = 0; i < 7; i++) {
@@ -259,7 +258,8 @@ async function disponibilidadAgenda(empresaId, timeZoneContacto) {
     const startUnix = Math.floor(fecha.getTime() / 1000);
     const endUnix = Math.floor(fechaFin.getTime() / 1000);
 
-    const todosLosSlots = [];
+    // Map para consolidar horarios únicos: key = hora, value = array de asesor_ids
+    const horariosUnicos = new Map();
 
     // Obtener slots de cada asesor
     for (const asesor of asesores) {
@@ -270,47 +270,50 @@ async function disponibilidadAgenda(empresaId, timeZoneContacto) {
         const eventos = await getEvents(asesor.grant_id, cal.id, startUnix, endUnix);
         const slots = calcularSlots(fecha, eventos, asesor.disponibilidad, asesor.duracion_cita_minutos || 30, timezone);
         
-        // Agregar info del asesor a cada slot
+        // Agregar cada slot al mapa de horarios únicos
         slots.forEach(slot => {
-          todosLosSlots.push({
-            ...slot,
-            asesor_id: asesor.id,
-            asesor_nombre: `${asesor.nombre} ${asesor.apellido}`,
-          });
+          const key = slot.hora; // Usar la hora como key única
+          if (!horariosUnicos.has(key)) {
+            horariosUnicos.set(key, {
+              hora: slot.hora,
+              inicio: slot.inicio,
+              asesores_disponibles: []
+            });
+          }
+          horariosUnicos.get(key).asesores_disponibles.push(asesor.id);
         });
       } catch (e) {
         console.log(`  ⚠️ Error obteniendo slots de ${asesor.nombre}: ${e.message}`);
       }
     }
 
-    if (todosLosSlots.length > 0) {
+    if (horariosUnicos.size > 0) {
       const fechaStr = fecha.toLocaleDateString("es-CO", { 
         timeZone: timezone, weekday: "long", day: "numeric", month: "long" 
       });
       
+      // Convertir Map a array y ordenar por hora
+      const slotsUnicos = Array.from(horariosUnicos.values())
+        .sort((a, b) => new Date(a.inicio) - new Date(b.inicio))
+        .map(s => ({
+          hora: s.hora,
+          inicio: s.inicio,
+          asesores_disponibles: s.asesores_disponibles.length
+        }));
+      
       // Agrupar por período
       const slotsPorPeriodo = {};
-      todosLosSlots.forEach(slot => {
+      slotsUnicos.forEach(slot => {
         const periodo = getPeriodoDia(slot.inicio);
         if (!slotsPorPeriodo[periodo]) slotsPorPeriodo[periodo] = [];
         slotsPorPeriodo[periodo].push(slot);
       });
 
-      // Ordenar slots por hora dentro de cada período
-      Object.keys(slotsPorPeriodo).forEach(periodo => {
-        slotsPorPeriodo[periodo].sort((a, b) => new Date(a.inicio) - new Date(b.inicio));
-      });
-
       disponibilidadDias.push({
         fecha: fecha.toISOString().split("T")[0],
         fechaTexto: fechaStr,
-        total_slots: todosLosSlots.length,
-        slots: todosLosSlots.map(s => ({ 
-          hora: s.hora, 
-          inicio: s.inicio,
-          asesor_id: s.asesor_id,
-          asesor_nombre: s.asesor_nombre,
-        })),
+        total_horarios: slotsUnicos.length,
+        slots: slotsUnicos,
         porPeriodo: slotsPorPeriodo,
       });
     }
@@ -322,7 +325,6 @@ async function disponibilidadAgenda(empresaId, timeZoneContacto) {
     empresa_id: empresaId,
     time_zone: timezone,
     hora_actual: ahoraStr,
-    asesores: asesoresInfo,
     total_asesores: asesores.length,
     disponibilidad: disponibilidadDias,
     hay_disponibilidad: disponibilidadDias.length > 0,
