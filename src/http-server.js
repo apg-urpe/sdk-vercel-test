@@ -52,6 +52,25 @@ function getAhoraEnTimezone(timezone) {
   );
 }
 
+async function getAsesorById(asesorId) {
+  console.log(`  📋 Buscando asesor directo: ${asesorId}`);
+  
+  const { data: asesor, error: asesorError } = await supabase
+    .from("wp_team_humano")
+    .select("id, nombre, apellido, email, grant_id, timezone, duracion_cita_minutos, disponibilidad")
+    .eq("id", asesorId)
+    .eq("is_active", true)
+    .single();
+  
+  if (asesorError) {
+    console.log(`  ❌ Error buscando asesor: ${asesorError.message}`);
+    return null;
+  }
+  
+  console.log(`  ✅ Asesor encontrado: ${asesor?.nombre} ${asesor?.apellido} (grant_id: ${asesor?.grant_id})`);
+  return asesor;
+}
+
 async function getAsesorByContactoId(contactoId, requireTestMode = false) {
   console.log(`  📋 Buscando contacto: ${contactoId}`);
   
@@ -187,13 +206,17 @@ function calcularSlots(fecha, eventos, disponibilidad, duracionMinutos, timezone
 async function disponibilidadAgenda(contactoId, timeZoneContacto) {
   const timezone = timeZoneContacto || "America/Bogota";
   
-  const asesor = await getAsesorByContactoId(contactoId);
-  if (!asesor) return { error: "No se encontró asesor asignado al contacto" };
-  if (!asesor.grant_id || asesor.grant_id === "Solicitud enviada") {
+  // Si no se proporciona contacto_id, usar Luis Villegas (id=154) por defecto
+  const asesorId = contactoId ? await getAsesorByContactoId(contactoId) : 
+    await getAsesorById(154); // Luis Villegas
+  
+  if (!asesorId) return { error: "No se encontró asesor" };
+  if (asesorId.blocked) return { error: asesorId.message };
+  if (!asesorId.grant_id || asesorId.grant_id === "Solicitud enviada") {
     return { error: "El asesor no tiene calendario configurado" };
   }
 
-  const cal = await getCalendarioPrimario(asesor.grant_id);
+  const cal = await getCalendarioPrimario(asesorId.grant_id);
   if (!cal) return { error: "Calendario no encontrado" };
 
   const ahora = getAhoraEnTimezone(timezone);
@@ -211,8 +234,8 @@ async function disponibilidadAgenda(contactoId, timeZoneContacto) {
     const endUnix = Math.floor(fechaFin.getTime() / 1000);
 
     try {
-      const eventos = await getEvents(asesor.grant_id, cal.id, startUnix, endUnix);
-      const slots = calcularSlots(fecha, eventos, asesor.disponibilidad, asesor.duracion_cita_minutos || 30, timezone);
+      const eventos = await getEvents(asesorId.grant_id, cal.id, startUnix, endUnix);
+      const slots = calcularSlots(fecha, eventos, asesorId.disponibilidad, asesorId.duracion_cita_minutos || 30, timezone);
       
       if (slots.length > 0) {
         const fechaStr = fecha.toLocaleDateString("es-CO", { 
@@ -241,11 +264,11 @@ async function disponibilidadAgenda(contactoId, timeZoneContacto) {
   const ahoraStr = ahora.toLocaleString("es-CO", { timeZone: timezone });
   
   return {
-    contacto_id: contactoId,
+    contacto_id: contactoId || "default",
     time_zone: timezone,
     hora_actual: ahoraStr,
-    asesor: `${asesor.nombre} ${asesor.apellido}`,
-    duracion_cita_minutos: asesor.duracion_cita_minutos || 30,
+    asesor: `${asesorId.nombre} ${asesorId.apellido}`,
+    duracion_cita_minutos: asesorId.duracion_cita_minutos || 30,
     disponibilidad: disponibilidadDias,
     hay_disponibilidad: disponibilidadDias.length > 0,
   };
