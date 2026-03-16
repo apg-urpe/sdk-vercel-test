@@ -85,9 +85,14 @@ async function getAsesoresByEmpresaId(empresaId) {
     return [];
   }
   
+  console.log(`  📋 Asesores totales en empresa: ${asesores?.length || 0}`);
+  asesores?.forEach(a => {
+    console.log(`     - ${a.nombre} ${a.apellido} (id: ${a.id}, grant_id: ${a.grant_id ? '✅' : '❌'})`);
+  });
+  
   // Filtrar solo asesores con calendario configurado
   const asesoresConCalendario = asesores.filter(a => a.grant_id && a.grant_id !== "Solicitud enviada");
-  console.log(`  ✅ Asesores encontrados: ${asesoresConCalendario.length} con calendario de ${asesores.length} total`);
+  console.log(`  ✅ Asesores con calendario: ${asesoresConCalendario.length}`);
   
   return asesoresConCalendario;
 }
