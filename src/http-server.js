@@ -29,10 +29,8 @@ console.log("✅ Módulos importados correctamente");
 
 const PORT = process.env.PORT || 3000;
 
-// Cache
+// Cache solo para calendarios (no cambian frecuentemente)
 const calendariosCache = new Map();
-const asesoresCache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 
 // ⚠️ MODO TEST: Solo permitir operaciones con Luis Villegas (id=154)
 const ASESOR_TEST_ID = 154;
@@ -74,14 +72,6 @@ async function getAsesorById(asesorId) {
 }
 
 async function getAsesoresByEmpresaId(empresaId) {
-  // Verificar cache
-  const cacheKey = `empresa_${empresaId}`;
-  const cached = asesoresCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    console.log(`  🏢 Asesores desde cache: ${cached.data.length}`);
-    return cached.data;
-  }
-  
   const { data: asesores, error: asesoresError } = await supabase
     .from("wp_team_humano")
     .select("id, nombre, apellido, email, grant_id, timezone, duracion_cita_minutos, disponibilidad")
@@ -96,9 +86,6 @@ async function getAsesoresByEmpresaId(empresaId) {
   // Filtrar solo asesores con calendario configurado
   const asesoresConCalendario = asesores.filter(a => a.grant_id && a.grant_id !== "Solicitud enviada");
   console.log(`  🏢 Asesores: ${asesoresConCalendario.length} con calendario de ${asesores.length} total`);
-  
-  // Guardar en cache
-  asesoresCache.set(cacheKey, { data: asesoresConCalendario, timestamp: Date.now() });
   
   return asesoresConCalendario;
 }
