@@ -71,6 +71,27 @@ async function getAsesorById(asesorId) {
   return asesor;
 }
 
+async function getAsesoresByEmpresaId(empresaId) {
+  console.log(`  🏢 Buscando asesores de empresa: ${empresaId}`);
+  
+  const { data: asesores, error: asesoresError } = await supabase
+    .from("wp_team_humano")
+    .select("id, nombre, apellido, email, grant_id, timezone, duracion_cita_minutos, disponibilidad")
+    .eq("empresa_id", empresaId)
+    .eq("is_active", true);
+  
+  if (asesoresError) {
+    console.log(`  ❌ Error buscando asesores: ${asesoresError.message}`);
+    return [];
+  }
+  
+  // Filtrar solo asesores con calendario configurado
+  const asesoresConCalendario = asesores.filter(a => a.grant_id && a.grant_id !== "Solicitud enviada");
+  console.log(`  ✅ Asesores encontrados: ${asesoresConCalendario.length} con calendario de ${asesores.length} total`);
+  
+  return asesoresConCalendario;
+}
+
 async function getAsesorByContactoId(contactoId, requireTestMode = false) {
   console.log(`  📋 Buscando contacto: ${contactoId}`);
   
@@ -203,25 +224,25 @@ function calcularSlots(fecha, eventos, disponibilidad, duracionMinutos, timezone
 // ============================================
 // TOOL 1: Disponibilidad_Agenda
 // ============================================
-async function disponibilidadAgenda(contactoId, timeZoneContacto) {
+async function disponibilidadAgenda(empresaId, timeZoneContacto) {
   const timezone = timeZoneContacto || "America/Bogota";
   
-  // Si no se proporciona contacto_id, usar Luis Villegas (id=154) por defecto
-  const asesorId = contactoId ? await getAsesorByContactoId(contactoId) : 
-    await getAsesorById(154); // Luis Villegas
-  
-  if (!asesorId) return { error: "No se encontró asesor" };
-  if (asesorId.blocked) return { error: asesorId.message };
-  if (!asesorId.grant_id || asesorId.grant_id === "Solicitud enviada") {
-    return { error: "El asesor no tiene calendario configurado" };
+  if (!empresaId) {
+    return { error: "Se requiere empresa_id" };
   }
-
-  const cal = await getCalendarioPrimario(asesorId.grant_id);
-  if (!cal) return { error: "Calendario no encontrado" };
+  
+  // Obtener todos los asesores de la empresa
+  const asesores = await getAsesoresByEmpresaId(empresaId);
+  
+  if (asesores.length === 0) {
+    return { error: "No se encontraron asesores con calendario configurado para esta empresa" };
+  }
 
   const ahora = getAhoraEnTimezone(timezone);
   const disponibilidadDias = [];
+  const asesoresInfo = asesores.map(a => `${a.nombre} ${a.apellido}`);
 
+  // Consolidar disponibilidad de todos los asesores
   for (let i = 0; i < 7; i++) {
     const fecha = new Date(ahora);
     fecha.setDate(fecha.getDate() + i);
@@ -233,42 +254,71 @@ async function disponibilidadAgenda(contactoId, timeZoneContacto) {
     const startUnix = Math.floor(fecha.getTime() / 1000);
     const endUnix = Math.floor(fechaFin.getTime() / 1000);
 
-    try {
-      const eventos = await getEvents(asesorId.grant_id, cal.id, startUnix, endUnix);
-      const slots = calcularSlots(fecha, eventos, asesorId.disponibilidad, asesorId.duracion_cita_minutos || 30, timezone);
-      
-      if (slots.length > 0) {
-        const fechaStr = fecha.toLocaleDateString("es-CO", { 
-          timeZone: timezone, weekday: "long", day: "numeric", month: "long" 
-        });
-        
-        const slotsPorPeriodo = {};
-        slots.forEach(slot => {
-          const periodo = getPeriodoDia(slot.inicio);
-          if (!slotsPorPeriodo[periodo]) slotsPorPeriodo[periodo] = [];
-          if (!slotsPorPeriodo[periodo].find(s => s.hora === slot.hora)) {
-            slotsPorPeriodo[periodo].push(slot);
-          }
-        });
+    const todosLosSlots = [];
 
-        disponibilidadDias.push({
-          fecha: fecha.toISOString().split("T")[0],
-          fechaTexto: fechaStr,
-          slots: slots.map(s => ({ hora: s.hora, inicio: s.inicio })),
-          porPeriodo: slotsPorPeriodo,
+    // Obtener slots de cada asesor
+    for (const asesor of asesores) {
+      try {
+        const cal = await getCalendarioPrimario(asesor.grant_id);
+        if (!cal) continue;
+        
+        const eventos = await getEvents(asesor.grant_id, cal.id, startUnix, endUnix);
+        const slots = calcularSlots(fecha, eventos, asesor.disponibilidad, asesor.duracion_cita_minutos || 30, timezone);
+        
+        // Agregar info del asesor a cada slot
+        slots.forEach(slot => {
+          todosLosSlots.push({
+            ...slot,
+            asesor_id: asesor.id,
+            asesor_nombre: `${asesor.nombre} ${asesor.apellido}`,
+          });
         });
+      } catch (e) {
+        console.log(`  ⚠️ Error obteniendo slots de ${asesor.nombre}: ${e.message}`);
       }
-    } catch {}
+    }
+
+    if (todosLosSlots.length > 0) {
+      const fechaStr = fecha.toLocaleDateString("es-CO", { 
+        timeZone: timezone, weekday: "long", day: "numeric", month: "long" 
+      });
+      
+      // Agrupar por período
+      const slotsPorPeriodo = {};
+      todosLosSlots.forEach(slot => {
+        const periodo = getPeriodoDia(slot.inicio);
+        if (!slotsPorPeriodo[periodo]) slotsPorPeriodo[periodo] = [];
+        slotsPorPeriodo[periodo].push(slot);
+      });
+
+      // Ordenar slots por hora dentro de cada período
+      Object.keys(slotsPorPeriodo).forEach(periodo => {
+        slotsPorPeriodo[periodo].sort((a, b) => new Date(a.inicio) - new Date(b.inicio));
+      });
+
+      disponibilidadDias.push({
+        fecha: fecha.toISOString().split("T")[0],
+        fechaTexto: fechaStr,
+        total_slots: todosLosSlots.length,
+        slots: todosLosSlots.map(s => ({ 
+          hora: s.hora, 
+          inicio: s.inicio,
+          asesor_id: s.asesor_id,
+          asesor_nombre: s.asesor_nombre,
+        })),
+        porPeriodo: slotsPorPeriodo,
+      });
+    }
   }
 
   const ahoraStr = ahora.toLocaleString("es-CO", { timeZone: timezone });
   
   return {
-    contacto_id: contactoId || "default",
+    empresa_id: empresaId,
     time_zone: timezone,
     hora_actual: ahoraStr,
-    asesor: `${asesorId.nombre} ${asesorId.apellido}`,
-    duracion_cita_minutos: asesorId.duracion_cita_minutos || 30,
+    asesores: asesoresInfo,
+    total_asesores: asesores.length,
     disponibilidad: disponibilidadDias,
     hay_disponibilidad: disponibilidadDias.length > 0,
   };
@@ -458,8 +508,8 @@ const server = http.createServer(async (req, res) => {
 
     switch (req.url) {
       case "/disponibilidad":
-        console.log(`[${requestId}] Ejecutando: disponibilidadAgenda(${body.contacto_id}, ${body.time_zone_contacto})`);
-        result = await disponibilidadAgenda(body.contacto_id, body.time_zone_contacto);
+        console.log(`[${requestId}] Ejecutando: disponibilidadAgenda(${body.empresa_id}, ${body.time_zone_contacto})`);
+        result = await disponibilidadAgenda(body.empresa_id, body.time_zone_contacto);
         break;
       
       case "/crear-evento":
