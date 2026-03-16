@@ -31,16 +31,17 @@ async function nylasRequest(endpoint, options = {}) {
 /**
  * Obtiene la disponibilidad de un asesor usando Free/Busy
  * @param {string} grantId - Grant ID del asesor
+ * @param {string} email - Email del asesor
  * @param {number} startTime - Unix timestamp inicio
  * @param {number} endTime - Unix timestamp fin
  */
-export async function getFreeBusy(grantId, startTime, endTime) {
+export async function getFreeBusy(grantId, email, startTime, endTime) {
   const result = await nylasRequest(`/v3/grants/${grantId}/calendars/free-busy`, {
     method: "POST",
     body: JSON.stringify({
       start_time: startTime,
       end_time: endTime,
-      emails: [], // Vacío para obtener del propio grant
+      emails: [email],
     }),
   });
   return result.data;

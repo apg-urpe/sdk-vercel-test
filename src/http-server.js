@@ -259,7 +259,7 @@ async function disponibilidadAgenda(empresaId, timeZoneContacto) {
   // Obtener Free/Busy de TODOS los asesores EN PARALELO (una llamada por asesor para 7 días)
   const freeBusyPromises = asesores.map(async (asesor) => {
     try {
-      const freeBusy = await getFreeBusy(asesor.grant_id, startUnix, endUnix);
+      const freeBusy = await getFreeBusy(asesor.grant_id, asesor.email, startUnix, endUnix);
       return { asesor, freeBusy, error: null };
     } catch (e) {
       console.log(`  ⚠️ Error free/busy ${asesor.nombre}: ${e.message}`);
