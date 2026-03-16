@@ -12,8 +12,20 @@
 
 import "dotenv/config";
 import http from "http";
+
+// Log de inicio
+console.log("🔄 Iniciando servidor...");
+console.log("📋 Variables de entorno:");
+console.log(`   SUPABASE_URL: ${process.env.SUPABASE_URL ? "✅" : "❌ FALTA"}`);
+console.log(`   SUPABASE_SERVICE_KEY: ${process.env.SUPABASE_SERVICE_KEY ? "✅" : "❌ FALTA"}`);
+console.log(`   NYLAS_API_KEY: ${process.env.NYLAS_API_KEY ? "✅" : "❌ FALTA"}`);
+console.log(`   NYLAS_API_URL: ${process.env.NYLAS_API_URL ? "✅" : "❌ FALTA"}`);
+console.log(`   PORT: ${process.env.PORT || "3000 (default)"}`);
+
 import { supabase } from "./lib/supabase.js";
 import { getCalendars, getEvents, createEvent, updateEvent, deleteEvent } from "./lib/nylas.js";
+
+console.log("✅ Módulos importados correctamente");
 
 const PORT = process.env.PORT || 3000;
 
