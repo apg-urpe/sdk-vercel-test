@@ -266,14 +266,28 @@ async function disponibilidadAgenda(empresaId, timeZoneContacto) {
     });
   }
 
-  // Obtener calendarios de todos los asesores EN PARALELO
+  // Obtener calendarios de todos los asesores EN PARALELO (con manejo de errores)
   const calendarioPromises = asesores.map(async (asesor) => {
-    const cal = await getCalendarioPrimario(asesor.grant_id);
-    return { asesor, cal };
+    try {
+      const cal = await getCalendarioPrimario(asesor.grant_id);
+      return { asesor, cal, error: null };
+    } catch (e) {
+      console.log(`  ⚠️ Error calendario ${asesor.nombre}: ${e.message}`);
+      return { asesor, cal: null, error: e.message };
+    }
   });
-  const asesoresConCalendario = (await Promise.all(calendarioPromises)).filter(a => a.cal);
+  const resultadosCalendario = await Promise.all(calendarioPromises);
+  const asesoresConCalendario = resultadosCalendario.filter(a => a.cal);
+  const asesoresConError = resultadosCalendario.filter(a => a.error);
   
-  console.log(`  ⏱️ Calendarios obtenidos en ${Date.now() - startTime}ms`);
+  console.log(`  ⏱️ Calendarios: ${asesoresConCalendario.length} OK, ${asesoresConError.length} errores en ${Date.now() - startTime}ms`);
+
+  if (asesoresConCalendario.length === 0) {
+    return { 
+      error: "No se pudieron obtener calendarios de ningún asesor",
+      detalles: asesoresConError.map(a => ({ asesor: a.asesor.nombre, error: a.error }))
+    };
+  }
 
   // Obtener TODOS los eventos de TODOS los asesores para TODOS los días EN PARALELO
   const eventosPromises = [];
@@ -281,14 +295,19 @@ async function disponibilidadAgenda(empresaId, timeZoneContacto) {
     for (const { startUnix, endUnix, fecha } of fechas) {
       eventosPromises.push(
         getEvents(asesor.grant_id, cal.id, startUnix, endUnix)
-          .then(eventos => ({ asesor, cal, eventos, fecha, startUnix, endUnix }))
-          .catch(() => ({ asesor, cal, eventos: [], fecha, startUnix, endUnix }))
+          .then(eventos => ({ asesor, cal, eventos, fecha, startUnix, endUnix, error: null }))
+          .catch(e => {
+            console.log(`  ⚠️ Error eventos ${asesor.nombre}: ${e.message}`);
+            return { asesor, cal, eventos: [], fecha, startUnix, endUnix, error: e.message };
+          })
       );
     }
   }
   
   const todosLosEventos = await Promise.all(eventosPromises);
-  console.log(`  ⏱️ Eventos obtenidos en ${Date.now() - startTime}ms`);
+  const eventosOK = todosLosEventos.filter(e => !e.error).length;
+  const eventosError = todosLosEventos.filter(e => e.error).length;
+  console.log(`  ⏱️ Eventos: ${eventosOK} OK, ${eventosError} errores en ${Date.now() - startTime}ms`);
 
   // Procesar y consolidar slots por día
   const disponibilidadPorDia = new Map();
