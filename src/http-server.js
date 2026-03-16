@@ -90,12 +90,60 @@ async function getAsesoresByEmpresaId(empresaId) {
   return asesoresConCalendario;
 }
 
+async function getCitaContacto(contactoId) {
+  // Obtener contacto con todos los campos disponibles
+  const { data: contacto, error } = await supabase
+    .from("wp_contactos")
+    .select("*")
+    .eq("id", contactoId)
+    .single();
+  
+  if (error || !contacto) return null;
+  
+  // Obtener nombre de empresa
+  let empresaNombre = "";
+  if (contacto.empresa_id) {
+    const { data: empresa } = await supabase
+      .from("wp_empresas")
+      .select("nombre")
+      .eq("id", contacto.empresa_id)
+      .single();
+    empresaNombre = empresa?.nombre || "";
+  }
+  
+  // Obtener nombre del asesor
+  let asesorNombre = "";
+  if (contacto.asesor_id) {
+    const { data: asesor } = await supabase
+      .from("wp_team_humano")
+      .select("nombre, apellido")
+      .eq("id", contacto.asesor_id)
+      .single();
+    asesorNombre = asesor ? `${asesor.nombre} ${asesor.apellido?.charAt(0) || ""}` : "";
+  }
+  
+  // Buscar campos de cita (pueden tener diferentes nombres)
+  const citaFecha = contacto.cita_fecha || contacto.fecha_cita || contacto.appointment_date || contacto.scheduled_date || null;
+  const citaLink = contacto.cita_link || contacto.meet_link || contacto.google_meet || contacto.meeting_link || null;
+  const citaModalidad = contacto.cita_modalidad || contacto.modalidad || "Virtual";
+  
+  return {
+    contacto_nombre: `${contacto.nombre || contacto.name || ""} ${(contacto.apellido || contacto.last_name || "")?.charAt(0) || ""}`.trim(),
+    asesor_nombre: asesorNombre,
+    empresa_nombre: empresaNombre,
+    cita_fecha: citaFecha,
+    cita_link: citaLink,
+    cita_modalidad: citaModalidad,
+    tiene_cita: !!citaFecha
+  };
+}
+
 async function getAsesorByContactoId(contactoId, requireTestMode = false) {
   console.log(`  📋 Buscando contacto: ${contactoId}`);
   
   const { data: contacto, error: contactoError } = await supabase
     .from("wp_contactos")
-    .select("asesor_id")
+    .select("asesor_id, empresa_id")
     .eq("id", contactoId)
     .single();
   
@@ -222,8 +270,12 @@ function calcularSlots(fecha, eventos, disponibilidad, duracionMinutos, timezone
 // ============================================
 // TOOL 1: Disponibilidad_Agenda (OPTIMIZADO - FREE/BUSY PARALELO)
 // ============================================
-async function disponibilidadAgenda(empresaId, timeZoneContacto) {
+async function disponibilidadAgenda(contactoId, empresaId, timeZoneContacto) {
   const timezone = timeZoneContacto || "America/Bogota";
+  
+  if (!contactoId) {
+    return { error: "Se requiere contacto_id" };
+  }
   
   if (!empresaId) {
     return { error: "Se requiere empresa_id" };
@@ -231,8 +283,11 @@ async function disponibilidadAgenda(empresaId, timeZoneContacto) {
   
   const startTime = Date.now();
   
-  // Obtener asesores y calcular rango en paralelo
-  const asesores = await getAsesoresByEmpresaId(empresaId);
+  // Obtener info de cita del contacto en paralelo con asesores
+  const [citaInfo, asesores] = await Promise.all([
+    getCitaContacto(contactoId),
+    getAsesoresByEmpresaId(empresaId)
+  ]);
   
   if (asesores.length === 0) {
     return { error: "No se encontraron asesores con calendario configurado para esta empresa" };
@@ -320,7 +375,20 @@ async function disponibilidadAgenda(empresaId, timeZoneContacto) {
 
   disponibilidadDias.sort((a, b) => a.fecha.localeCompare(b.fecha));
   
+  // Formatear info de cita actual
+  let citaActual = null;
+  if (citaInfo) {
+    citaActual = {
+      texto: `🗓️ | ${citaInfo.asesor_nombre} | ${citaInfo.empresa_nombre} | ${citaInfo.cita_modalidad}`,
+      link: citaInfo.cita_link,
+      fecha: citaInfo.cita_fecha,
+      estado: citaInfo.tiene_cita ? "Cita programada" : "(Sin cita registrada)"
+    };
+  }
+  
   return {
+    cita_actual: citaActual,
+    contacto_id: contactoId,
     empresa_id: empresaId,
     time_zone: timezone,
     hora_actual: ahora.toLocaleString("es-CO", { timeZone: timezone }),
@@ -516,8 +584,8 @@ const server = http.createServer(async (req, res) => {
 
     switch (req.url) {
       case "/disponibilidad":
-        console.log(`[${requestId}] Ejecutando: disponibilidadAgenda(${body.empresa_id}, ${body.time_zone_contacto})`);
-        result = await disponibilidadAgenda(body.empresa_id, body.time_zone_contacto);
+        console.log(`[${requestId}] Ejecutando: disponibilidadAgenda(${body.contacto_id}, ${body.empresa_id}, ${body.time_zone_contacto})`);
+        result = await disponibilidadAgenda(body.contacto_id, body.empresa_id, body.time_zone_contacto);
         break;
       
       case "/crear-evento":
