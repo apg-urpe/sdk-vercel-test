@@ -462,8 +462,9 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Scheduling Agent HTTP Server running on port ${PORT}`);
+  console.log(`🌐 Listening on 0.0.0.0:${PORT}`);
   console.log(`📍 Endpoints:`);
   console.log(`   POST /disponibilidad`);
   console.log(`   POST /crear-evento`);
