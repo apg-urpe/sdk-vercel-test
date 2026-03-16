@@ -220,7 +220,7 @@ function calcularSlots(fecha, eventos, disponibilidad, duracionMinutos, timezone
 }
 
 // ============================================
-// TOOL 1: Disponibilidad_Agenda (OPTIMIZADO - UNA SOLA LLAMADA)
+// TOOL 1: Disponibilidad_Agenda (OPTIMIZADO - FREE/BUSY PARALELO)
 // ============================================
 async function disponibilidadAgenda(empresaId, timeZoneContacto) {
   const timezone = timeZoneContacto || "America/Bogota";
@@ -229,10 +229,9 @@ async function disponibilidadAgenda(empresaId, timeZoneContacto) {
     return { error: "Se requiere empresa_id" };
   }
   
-  console.log(`  ⏱️ Inicio consulta disponibilidad`);
   const startTime = Date.now();
   
-  // Obtener todos los asesores de la empresa
+  // Obtener asesores y calcular rango en paralelo
   const asesores = await getAsesoresByEmpresaId(empresaId);
   
   if (asesores.length === 0) {
@@ -240,74 +239,74 @@ async function disponibilidadAgenda(empresaId, timeZoneContacto) {
   }
 
   const ahora = getAhoraEnTimezone(timezone);
-  
-  // Calcular rango de 7 días
   const startUnix = Math.floor(ahora.getTime() / 1000);
   const finRango = new Date(ahora);
   finRango.setDate(finRango.getDate() + 7);
   const endUnix = Math.floor(finRango.getTime() / 1000);
 
-  // Usar el primer asesor válido como grant_id para la llamada
-  const grantId = asesores[0].grant_id;
-  const participants = asesores.map(a => ({ email: a.email }));
+  // Free/Busy TODOS en paralelo
+  const resultados = await Promise.all(
+    asesores.map(asesor => 
+      getFreeBusy(asesor.grant_id, asesor.email, startUnix, endUnix)
+        .then(freeBusy => ({ asesor, freeBusy, ok: true }))
+        .catch(() => ({ asesor, freeBusy: null, ok: false }))
+    )
+  );
   
-  console.log(`  📅 Consultando ${asesores.length} asesores en UNA llamada`);
+  const asesoresOK = resultados.filter(r => r.ok);
 
-  let availability;
-  try {
-    availability = await getAvailability(grantId, participants, startUnix, endUnix, 30);
-  } catch (e) {
-    console.log(`  ❌ Error availability: ${e.message}`);
-    return { error: `Error consultando disponibilidad: ${e.message}` };
+  if (asesoresOK.length === 0) {
+    return { error: "No se pudo obtener disponibilidad de ningún asesor" };
   }
-  
-  console.log(`  ⏱️ Nylas respondió en ${Date.now() - startTime}ms`);
 
-  // Procesar time_slots de la respuesta
+  // Procesar slots
   const disponibilidadPorDia = new Map();
   
-  if (availability && availability.time_slots) {
-    availability.time_slots.forEach(slot => {
-      const slotDate = new Date(slot.start_time * 1000);
-      const fechaKey = slotDate.toISOString().split("T")[0];
+  for (const { asesor, freeBusy } of asesoresOK) {
+    const busyPeriods = [];
+    if (freeBusy && Array.isArray(freeBusy)) {
+      freeBusy.forEach(fb => {
+        if (fb.time_slots) {
+          fb.time_slots.forEach(slot => {
+            if (slot.status === 'busy') {
+              busyPeriods.push({ start: slot.start_time, end: slot.end_time });
+            }
+          });
+        }
+      });
+    }
+
+    for (let i = 0; i < 7; i++) {
+      const fecha = new Date(ahora);
+      fecha.setDate(fecha.getDate() + i);
+      fecha.setHours(0, 0, 0, 0);
+      const fechaKey = fecha.toISOString().split("T")[0];
       
       if (!disponibilidadPorDia.has(fechaKey)) {
-        disponibilidadPorDia.set(fechaKey, {
-          fecha: fechaKey,
-          fechaObj: slotDate,
-          horariosUnicos: new Map()
-        });
+        disponibilidadPorDia.set(fechaKey, { fecha: fechaKey, fechaObj: fecha, horariosUnicos: new Map() });
       }
       
-      const hora = slotDate.toLocaleTimeString("es-CO", { 
-        timeZone: timezone, hour: "2-digit", minute: "2-digit", hour12: true 
-      });
-      const inicio = new Date(slot.start_time * 1000).toISOString();
-      const asesoresDisponibles = slot.emails ? slot.emails.length : 1;
-      
+      const eventosSimulados = busyPeriods.map(bp => ({ when: { start_time: bp.start, end_time: bp.end } }));
+      const slots = calcularSlots(fecha, eventosSimulados, asesor.disponibilidad, asesor.duracion_cita_minutos || 30, timezone);
       const diaData = disponibilidadPorDia.get(fechaKey);
-      if (!diaData.horariosUnicos.has(hora)) {
-        diaData.horariosUnicos.set(hora, {
-          hora,
-          inicio,
-          asesores_disponibles: asesoresDisponibles
-        });
-      }
-    });
+      
+      slots.forEach(slot => {
+        const key = slot.hora;
+        if (!diaData.horariosUnicos.has(key)) {
+          diaData.horariosUnicos.set(key, { hora: slot.hora, inicio: slot.inicio, asesores_disponibles: 0 });
+        }
+        diaData.horariosUnicos.get(key).asesores_disponibles++;
+      });
+    }
   }
 
-  // Convertir a formato de respuesta
+  // Formato de respuesta
   const disponibilidadDias = [];
   for (const [fechaKey, diaData] of disponibilidadPorDia) {
     if (diaData.horariosUnicos.size > 0) {
-      const fechaStr = diaData.fechaObj.toLocaleDateString("es-CO", { 
-        timeZone: timezone, weekday: "long", day: "numeric", month: "long" 
-      });
+      const fechaStr = diaData.fechaObj.toLocaleDateString("es-CO", { timeZone: timezone, weekday: "long", day: "numeric", month: "long" });
+      const slotsUnicos = Array.from(diaData.horariosUnicos.values()).sort((a, b) => new Date(a.inicio) - new Date(b.inicio));
       
-      const slotsUnicos = Array.from(diaData.horariosUnicos.values())
-        .sort((a, b) => new Date(a.inicio) - new Date(b.inicio));
-      
-      // Agrupar por período
       const slotsPorPeriodo = {};
       slotsUnicos.forEach(slot => {
         const periodo = getPeriodoDia(slot.inicio);
@@ -315,28 +314,18 @@ async function disponibilidadAgenda(empresaId, timeZoneContacto) {
         slotsPorPeriodo[periodo].push(slot);
       });
 
-      disponibilidadDias.push({
-        fecha: fechaKey,
-        fechaTexto: fechaStr,
-        total_horarios: slotsUnicos.length,
-        slots: slotsUnicos,
-        porPeriodo: slotsPorPeriodo,
-      });
+      disponibilidadDias.push({ fecha: fechaKey, fechaTexto: fechaStr, total_horarios: slotsUnicos.length, slots: slotsUnicos, porPeriodo: slotsPorPeriodo });
     }
   }
 
-  // Ordenar por fecha
   disponibilidadDias.sort((a, b) => a.fecha.localeCompare(b.fecha));
-
-  const ahoraStr = ahora.toLocaleString("es-CO", { timeZone: timezone });
-  
-  console.log(`  ⏱️ Total tiempo: ${Date.now() - startTime}ms`);
   
   return {
     empresa_id: empresaId,
     time_zone: timezone,
-    hora_actual: ahoraStr,
+    hora_actual: ahora.toLocaleString("es-CO", { timeZone: timezone }),
     total_asesores: asesores.length,
+    asesores_consultados: asesoresOK.length,
     tiempo_consulta_ms: Date.now() - startTime,
     disponibilidad: disponibilidadDias,
     hay_disponibilidad: disponibilidadDias.length > 0,

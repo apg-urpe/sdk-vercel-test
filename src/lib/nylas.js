@@ -56,7 +56,7 @@ export async function getFreeBusy(grantId, email, startTime, endTime) {
  * @param {number} durationMinutes - Duración de la cita
  */
 export async function getAvailability(grantId, participants, startTime, endTime, durationMinutes = 30) {
-  const result = await nylasRequest(`/v3/grants/${grantId}/calendars/availability`, {
+  const result = await nylasRequest(`/v3/calendars/availability`, {
     method: "POST",
     body: JSON.stringify({
       start_time: startTime,
