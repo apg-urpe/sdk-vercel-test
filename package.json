@@ -8,7 +8,8 @@
     "scheduling-agent": "./src/mcp-server.js"
   },
   "scripts": {
-    "start": "node src/mcp-server.js",
+    "start": "node src/http-server.js",
+    "mcp": "node src/mcp-server.js",
     "chat": "node src/chat.js",
     "dev": "node --watch src/chat.js"
   },
