@@ -23,7 +23,7 @@ console.log(`   NYLAS_API_URL: ${process.env.NYLAS_API_URL ? "✅" : "❌ FALTA"
 console.log(`   PORT: ${process.env.PORT || "3000 (default)"}`);
 
 import { supabase } from "./lib/supabase.js";
-import { getCalendars, getEvents, createEvent, updateEvent, deleteEvent } from "./lib/nylas.js";
+import { getCalendars, getEvents, getFreeBusy, createEvent, updateEvent, deleteEvent } from "./lib/nylas.js";
 
 console.log("✅ Módulos importados correctamente");
 
@@ -227,7 +227,7 @@ function calcularSlots(fecha, eventos, disponibilidad, duracionMinutos, timezone
 }
 
 // ============================================
-// TOOL 1: Disponibilidad_Agenda (OPTIMIZADO - PARALELO)
+// TOOL 1: Disponibilidad_Agenda (OPTIMIZADO - FREE/BUSY)
 // ============================================
 async function disponibilidadAgenda(empresaId, timeZoneContacto) {
   const timezone = timeZoneContacto || "America/Bogota";
@@ -236,7 +236,7 @@ async function disponibilidadAgenda(empresaId, timeZoneContacto) {
     return { error: "Se requiere empresa_id" };
   }
   
-  console.log(`  ⏱️ Inicio consulta disponibilidad`);
+  console.log(`  ⏱️ Inicio consulta disponibilidad (Free/Busy)`);
   const startTime = Date.now();
   
   // Obtener todos los asesores de la empresa
@@ -248,95 +248,95 @@ async function disponibilidadAgenda(empresaId, timeZoneContacto) {
 
   const ahora = getAhoraEnTimezone(timezone);
   
-  // Preparar fechas de los próximos 7 días
-  const fechas = [];
-  for (let i = 0; i < 7; i++) {
-    const fecha = new Date(ahora);
-    fecha.setDate(fecha.getDate() + i);
-    fecha.setHours(0, 0, 0, 0);
-    
-    const fechaFin = new Date(fecha);
-    fechaFin.setHours(23, 59, 59, 999);
-    
-    fechas.push({
-      fecha,
-      fechaFin,
-      startUnix: Math.floor(fecha.getTime() / 1000),
-      endUnix: Math.floor(fechaFin.getTime() / 1000),
-    });
-  }
+  // Calcular rango de 7 días (una sola llamada por asesor)
+  const startUnix = Math.floor(ahora.getTime() / 1000);
+  const finRango = new Date(ahora);
+  finRango.setDate(finRango.getDate() + 7);
+  const endUnix = Math.floor(finRango.getTime() / 1000);
 
-  // Obtener calendarios de todos los asesores EN PARALELO (con manejo de errores)
-  const calendarioPromises = asesores.map(async (asesor) => {
+  console.log(`  📅 Rango: ${new Date(startUnix * 1000).toISOString()} - ${new Date(endUnix * 1000).toISOString()}`);
+
+  // Obtener Free/Busy de TODOS los asesores EN PARALELO (una llamada por asesor para 7 días)
+  const freeBusyPromises = asesores.map(async (asesor) => {
     try {
-      const cal = await getCalendarioPrimario(asesor.grant_id);
-      return { asesor, cal, error: null };
+      const freeBusy = await getFreeBusy(asesor.grant_id, startUnix, endUnix);
+      return { asesor, freeBusy, error: null };
     } catch (e) {
-      console.log(`  ⚠️ Error calendario ${asesor.nombre}: ${e.message}`);
-      return { asesor, cal: null, error: e.message };
+      console.log(`  ⚠️ Error free/busy ${asesor.nombre}: ${e.message}`);
+      return { asesor, freeBusy: null, error: e.message };
     }
   });
-  const resultadosCalendario = await Promise.all(calendarioPromises);
-  const asesoresConCalendario = resultadosCalendario.filter(a => a.cal);
-  const asesoresConError = resultadosCalendario.filter(a => a.error);
   
-  console.log(`  ⏱️ Calendarios: ${asesoresConCalendario.length} OK, ${asesoresConError.length} errores en ${Date.now() - startTime}ms`);
+  const resultadosFreeBusy = await Promise.all(freeBusyPromises);
+  const asesoresOK = resultadosFreeBusy.filter(r => r.freeBusy && !r.error);
+  const asesoresError = resultadosFreeBusy.filter(r => r.error);
+  
+  console.log(`  ⏱️ Free/Busy: ${asesoresOK.length} OK, ${asesoresError.length} errores en ${Date.now() - startTime}ms`);
 
-  if (asesoresConCalendario.length === 0) {
+  if (asesoresOK.length === 0) {
     return { 
-      error: "No se pudieron obtener calendarios de ningún asesor",
-      detalles: asesoresConError.map(a => ({ asesor: a.asesor.nombre, error: a.error }))
+      error: "No se pudo obtener disponibilidad de ningún asesor",
+      detalles: asesoresError.map(a => ({ asesor: a.asesor.nombre, error: a.error }))
     };
   }
-
-  // Obtener TODOS los eventos de TODOS los asesores para TODOS los días EN PARALELO
-  const eventosPromises = [];
-  for (const { asesor, cal } of asesoresConCalendario) {
-    for (const { startUnix, endUnix, fecha } of fechas) {
-      eventosPromises.push(
-        getEvents(asesor.grant_id, cal.id, startUnix, endUnix)
-          .then(eventos => ({ asesor, cal, eventos, fecha, startUnix, endUnix, error: null }))
-          .catch(e => {
-            console.log(`  ⚠️ Error eventos ${asesor.nombre}: ${e.message}`);
-            return { asesor, cal, eventos: [], fecha, startUnix, endUnix, error: e.message };
-          })
-      );
-    }
-  }
-  
-  const todosLosEventos = await Promise.all(eventosPromises);
-  const eventosOK = todosLosEventos.filter(e => !e.error).length;
-  const eventosError = todosLosEventos.filter(e => e.error).length;
-  console.log(`  ⏱️ Eventos: ${eventosOK} OK, ${eventosError} errores en ${Date.now() - startTime}ms`);
 
   // Procesar y consolidar slots por día
   const disponibilidadPorDia = new Map();
   
-  for (const { asesor, eventos, fecha } of todosLosEventos) {
-    const fechaKey = fecha.toISOString().split("T")[0];
-    
-    if (!disponibilidadPorDia.has(fechaKey)) {
-      disponibilidadPorDia.set(fechaKey, {
-        fecha: fechaKey,
-        fechaObj: fecha,
-        horariosUnicos: new Map()
+  for (const { asesor, freeBusy } of asesoresOK) {
+    // Extraer períodos ocupados del free/busy
+    const busyPeriods = [];
+    if (freeBusy && Array.isArray(freeBusy)) {
+      freeBusy.forEach(fb => {
+        if (fb.time_slots) {
+          fb.time_slots.forEach(slot => {
+            if (slot.status === 'busy') {
+              busyPeriods.push({
+                start: slot.start_time,
+                end: slot.end_time
+              });
+            }
+          });
+        }
       });
     }
-    
-    const slots = calcularSlots(fecha, eventos, asesor.disponibilidad, asesor.duracion_cita_minutos || 30, timezone);
-    const diaData = disponibilidadPorDia.get(fechaKey);
-    
-    slots.forEach(slot => {
-      const key = slot.hora;
-      if (!diaData.horariosUnicos.has(key)) {
-        diaData.horariosUnicos.set(key, {
-          hora: slot.hora,
-          inicio: slot.inicio,
-          asesores_disponibles: 0
+
+    // Calcular slots disponibles para cada día
+    for (let i = 0; i < 7; i++) {
+      const fecha = new Date(ahora);
+      fecha.setDate(fecha.getDate() + i);
+      fecha.setHours(0, 0, 0, 0);
+      
+      const fechaKey = fecha.toISOString().split("T")[0];
+      
+      if (!disponibilidadPorDia.has(fechaKey)) {
+        disponibilidadPorDia.set(fechaKey, {
+          fecha: fechaKey,
+          fechaObj: fecha,
+          horariosUnicos: new Map()
         });
       }
-      diaData.horariosUnicos.get(key).asesores_disponibles++;
-    });
+      
+      // Convertir busyPeriods a formato de eventos para reusar calcularSlots
+      const eventosSimulados = busyPeriods.map(bp => ({
+        when: { start_time: bp.start, end_time: bp.end }
+      }));
+      
+      const slots = calcularSlots(fecha, eventosSimulados, asesor.disponibilidad, asesor.duracion_cita_minutos || 30, timezone);
+      const diaData = disponibilidadPorDia.get(fechaKey);
+      
+      slots.forEach(slot => {
+        const key = slot.hora;
+        if (!diaData.horariosUnicos.has(key)) {
+          diaData.horariosUnicos.set(key, {
+            hora: slot.hora,
+            inicio: slot.inicio,
+            asesores_disponibles: 0
+          });
+        }
+        diaData.horariosUnicos.get(key).asesores_disponibles++;
+      });
+    }
   }
 
   // Convertir a formato de respuesta
@@ -380,6 +380,7 @@ async function disponibilidadAgenda(empresaId, timeZoneContacto) {
     time_zone: timezone,
     hora_actual: ahoraStr,
     total_asesores: asesores.length,
+    asesores_consultados: asesoresOK.length,
     tiempo_consulta_ms: Date.now() - startTime,
     disponibilidad: disponibilidadDias,
     hay_disponibilidad: disponibilidadDias.length > 0,
