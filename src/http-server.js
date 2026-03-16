@@ -41,36 +41,70 @@ function getAhoraEnTimezone(timezone) {
 }
 
 async function getAsesorByContactoId(contactoId, requireTestMode = false) {
-  const { data: contacto } = await supabase
+  console.log(`  📋 Buscando contacto: ${contactoId}`);
+  
+  const { data: contacto, error: contactoError } = await supabase
     .from("wp_contactos")
     .select("asesor_id")
     .eq("id", contactoId)
     .single();
   
-  if (!contacto?.asesor_id) return null;
+  if (contactoError) {
+    console.log(`  ❌ Error buscando contacto: ${contactoError.message}`);
+    return null;
+  }
+  
+  if (!contacto?.asesor_id) {
+    console.log(`  ❌ Contacto no tiene asesor asignado`);
+    return null;
+  }
+  
+  console.log(`  📋 Asesor ID del contacto: ${contacto.asesor_id}`);
   
   if (ASESOR_TEST_ID && requireTestMode && contacto.asesor_id !== ASESOR_TEST_ID) {
+    console.log(`  ⚠️ Bloqueado: asesor ${contacto.asesor_id} != test ${ASESOR_TEST_ID}`);
     return { blocked: true, message: `⚠️ Modo test activo: Solo se permiten operaciones con el asesor de prueba (ID: ${ASESOR_TEST_ID})` };
   }
   
-  const { data: asesor } = await supabase
+  const { data: asesor, error: asesorError } = await supabase
     .from("wp_team_humano")
     .select("id, nombre, apellido, email, grant_id, timezone, duracion_cita_minutos, disponibilidad")
     .eq("id", contacto.asesor_id)
     .eq("is_active", true)
     .single();
   
+  if (asesorError) {
+    console.log(`  ❌ Error buscando asesor: ${asesorError.message}`);
+    return null;
+  }
+  
+  console.log(`  ✅ Asesor encontrado: ${asesor?.nombre} ${asesor?.apellido} (grant_id: ${asesor?.grant_id})`);
   return asesor;
 }
 
 async function getCalendarioPrimario(grantId) {
+  console.log(`  📅 Buscando calendario para grant: ${grantId}`);
+  
   if (calendariosCache.has(grantId)) {
+    console.log(`  📅 Calendario en cache`);
     return calendariosCache.get(grantId);
   }
-  const calendarios = await getCalendars(grantId);
-  const cal = calendarios?.find(c => c.is_primary) || calendarios?.[0];
-  if (cal) calendariosCache.set(grantId, cal);
-  return cal;
+  
+  try {
+    const calendarios = await getCalendars(grantId);
+    console.log(`  📅 Calendarios encontrados: ${calendarios?.length || 0}`);
+    const cal = calendarios?.find(c => c.is_primary) || calendarios?.[0];
+    if (cal) {
+      console.log(`  ✅ Calendario primario: ${cal.id}`);
+      calendariosCache.set(grantId, cal);
+    } else {
+      console.log(`  ❌ No se encontró calendario`);
+    }
+    return cal;
+  } catch (error) {
+    console.log(`  ❌ Error obteniendo calendarios: ${error.message}`);
+    throw error;
+  }
 }
 
 function getPeriodoDia(hora) {
@@ -346,6 +380,11 @@ function sendJSON(res, data, status = 200) {
 }
 
 const server = http.createServer(async (req, res) => {
+  const requestId = Date.now().toString(36);
+  const startTime = Date.now();
+  
+  console.log(`[${requestId}] ${req.method} ${req.url}`);
+
   // CORS preflight
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
@@ -358,7 +397,17 @@ const server = http.createServer(async (req, res) => {
 
   // Health check
   if (req.url === "/" || req.url === "/health") {
-    return sendJSON(res, { status: "ok", service: "scheduling-agent", timestamp: new Date().toISOString() });
+    return sendJSON(res, { 
+      status: "ok", 
+      service: "scheduling-agent", 
+      timestamp: new Date().toISOString(),
+      env_check: {
+        NYLAS_API_KEY: !!process.env.NYLAS_API_KEY,
+        NYLAS_API_URL: !!process.env.NYLAS_API_URL,
+        SUPABASE_URL: !!process.env.SUPABASE_URL,
+        SUPABASE_SERVICE_KEY: !!process.env.SUPABASE_SERVICE_KEY,
+      }
+    });
   }
 
   // Solo POST
@@ -368,22 +417,28 @@ const server = http.createServer(async (req, res) => {
 
   try {
     const body = await parseBody(req);
+    console.log(`[${requestId}] Body:`, JSON.stringify(body));
+    
     let result;
 
     switch (req.url) {
       case "/disponibilidad":
+        console.log(`[${requestId}] Ejecutando: disponibilidadAgenda(${body.contacto_id}, ${body.time_zone_contacto})`);
         result = await disponibilidadAgenda(body.contacto_id, body.time_zone_contacto);
         break;
       
       case "/crear-evento":
+        console.log(`[${requestId}] Ejecutando: crearEventoCalendario`);
         result = await crearEventoCalendario(body);
         break;
       
       case "/reagendar-evento":
+        console.log(`[${requestId}] Ejecutando: reagendarEvento`);
         result = await reagendarEvento(body);
         break;
       
       case "/eliminar-evento":
+        console.log(`[${requestId}] Ejecutando: eliminarEvento(${body.event_id}, ${body.contacto_id})`);
         result = await eliminarEvento(body.event_id, body.contacto_id);
         break;
       
@@ -391,10 +446,19 @@ const server = http.createServer(async (req, res) => {
         return sendJSON(res, { error: "Endpoint not found" }, 404);
     }
 
+    const duration = Date.now() - startTime;
+    console.log(`[${requestId}] ✅ Completado en ${duration}ms`);
     sendJSON(res, result, result.error ? 400 : 200);
   } catch (error) {
-    console.error("Error:", error);
-    sendJSON(res, { error: error.message }, 500);
+    const duration = Date.now() - startTime;
+    console.error(`[${requestId}] ❌ Error en ${duration}ms:`);
+    console.error(`[${requestId}] - Mensaje: ${error.message}`);
+    console.error(`[${requestId}] - Stack: ${error.stack}`);
+    sendJSON(res, { 
+      error: error.message,
+      request_id: requestId,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    }, 500);
   }
 });
 
