@@ -23,7 +23,7 @@ console.log(`   NYLAS_API_URL: ${process.env.NYLAS_API_URL ? "✅" : "❌ FALTA"
 console.log(`   PORT: ${process.env.PORT || "3000 (default)"}`);
 
 import { supabase } from "./lib/supabase.js";
-import { getCalendars, getEvents, getFreeBusy, getAvailability, createEvent, updateEvent, deleteEvent } from "./lib/nylas.js";
+import { getCalendars, getEvents, getFreeBusy, createEvent, updateEvent, deleteEvent } from "./lib/nylas.js";
 
 console.log("✅ Módulos importados correctamente");
 

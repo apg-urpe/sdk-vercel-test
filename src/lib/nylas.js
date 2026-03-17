@@ -1,32 +1,13 @@
 /**
- * Cliente de Nylas API v3
+ * Cliente de Nylas API v3 - Usando SDK oficial
  */
 import "dotenv/config";
+import Nylas from "nylas";
 
-const NYLAS_API_KEY = process.env.NYLAS_API_KEY;
-const NYLAS_API_URL = process.env.NYLAS_API_URL || "https://api.us.nylas.com";
-
-/**
- * Hace una petición a la API de Nylas
- */
-async function nylasRequest(endpoint, options = {}) {
-  const url = `${NYLAS_API_URL}${endpoint}`;
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      "Authorization": `Bearer ${NYLAS_API_KEY}`,
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(`Nylas API Error: ${response.status} - ${JSON.stringify(error)}`);
-  }
-
-  return response.json();
-}
+const nylas = new Nylas({
+  apiKey: process.env.NYLAS_API_KEY,
+  apiUri: process.env.NYLAS_API_URL || "https://api.us.nylas.com",
+});
 
 /**
  * Obtiene la disponibilidad de un asesor usando Free/Busy
@@ -36,43 +17,15 @@ async function nylasRequest(endpoint, options = {}) {
  * @param {number} endTime - Unix timestamp fin
  */
 export async function getFreeBusy(grantId, email, startTime, endTime) {
-  const result = await nylasRequest(`/v3/grants/${grantId}/calendars/free-busy`, {
-    method: "POST",
-    body: JSON.stringify({
-      start_time: startTime,
-      end_time: endTime,
+  const response = await nylas.calendars.getFreeBusy({
+    identifier: grantId,
+    requestBody: {
+      startTime: startTime,
+      endTime: endTime,
       emails: [email],
-    }),
+    },
   });
-  return result.data;
-}
-
-/**
- * Obtiene disponibilidad de MÚLTIPLES participantes en UNA sola llamada
- * @param {string} grantId - Grant ID (cualquiera válido)
- * @param {Array} participants - Array de {email, calendar_ids}
- * @param {number} startTime - Unix timestamp inicio
- * @param {number} endTime - Unix timestamp fin
- * @param {number} durationMinutes - Duración de la cita
- */
-export async function getAvailability(grantId, participants, startTime, endTime, durationMinutes = 30) {
-  const result = await nylasRequest(`/v3/calendars/availability`, {
-    method: "POST",
-    body: JSON.stringify({
-      start_time: startTime,
-      end_time: endTime,
-      duration_minutes: durationMinutes,
-      interval_minutes: durationMinutes,
-      participants: participants.map(p => ({
-        email: p.email,
-        calendar_ids: ["primary"]
-      })),
-      availability_rules: {
-        availability_method: "max-availability"
-      }
-    }),
-  });
-  return result.data;
+  return response.data;
 }
 
 /**
@@ -80,8 +33,10 @@ export async function getAvailability(grantId, participants, startTime, endTime,
  * @param {string} grantId - Grant ID del asesor
  */
 export async function getCalendars(grantId) {
-  const result = await nylasRequest(`/v3/grants/${grantId}/calendars`);
-  return result.data;
+  const response = await nylas.calendars.list({
+    identifier: grantId,
+  });
+  return response.data;
 }
 
 /**
@@ -92,14 +47,16 @@ export async function getCalendars(grantId) {
  * @param {number} endTime - Unix timestamp fin
  */
 export async function getEvents(grantId, calendarId, startTime, endTime) {
-  const params = new URLSearchParams({
-    calendar_id: calendarId,
-    start: startTime.toString(),
-    end: endTime.toString(),
-    limit: "50",
+  const response = await nylas.events.list({
+    identifier: grantId,
+    queryParams: {
+      calendarId: calendarId,
+      start: startTime.toString(),
+      end: endTime.toString(),
+      limit: 50,
+    },
   });
-  const result = await nylasRequest(`/v3/grants/${grantId}/events?${params}`);
-  return result.data;
+  return response.data;
 }
 
 /**
@@ -109,12 +66,24 @@ export async function getEvents(grantId, calendarId, startTime, endTime) {
  * @param {object} eventData - Datos del evento
  */
 export async function createEvent(grantId, calendarId, eventData) {
-  const params = new URLSearchParams({ calendar_id: calendarId });
-  const result = await nylasRequest(`/v3/grants/${grantId}/events?${params}`, {
-    method: "POST",
-    body: JSON.stringify(eventData),
+  const response = await nylas.events.create({
+    identifier: grantId,
+    requestBody: {
+      title: eventData.title,
+      description: eventData.description || "",
+      when: {
+        startTime: eventData.when.start_time,
+        endTime: eventData.when.end_time,
+      },
+      participants: eventData.participants,
+      location: eventData.location,
+      conferencing: eventData.conferencing,
+    },
+    queryParams: {
+      calendarId: calendarId,
+    },
   });
-  return result.data;
+  return response.data;
 }
 
 /**
@@ -125,12 +94,29 @@ export async function createEvent(grantId, calendarId, eventData) {
  * @param {object} eventData - Datos a actualizar
  */
 export async function updateEvent(grantId, calendarId, eventId, eventData) {
-  const params = new URLSearchParams({ calendar_id: calendarId });
-  const result = await nylasRequest(`/v3/grants/${grantId}/events/${eventId}?${params}`, {
-    method: "PUT",
-    body: JSON.stringify(eventData),
+  const requestBody = {};
+  
+  if (eventData.title) requestBody.title = eventData.title;
+  if (eventData.description) requestBody.description = eventData.description;
+  if (eventData.when) {
+    requestBody.when = {
+      startTime: eventData.when.start_time,
+      endTime: eventData.when.end_time,
+    };
+  }
+  if (eventData.participants) requestBody.participants = eventData.participants;
+  if (eventData.location) requestBody.location = eventData.location;
+  if (eventData.conferencing) requestBody.conferencing = eventData.conferencing;
+
+  const response = await nylas.events.update({
+    identifier: grantId,
+    eventId: eventId,
+    requestBody: requestBody,
+    queryParams: {
+      calendarId: calendarId,
+    },
   });
-  return result.data;
+  return response.data;
 }
 
 /**
@@ -140,9 +126,12 @@ export async function updateEvent(grantId, calendarId, eventId, eventData) {
  * @param {string} eventId - ID del evento
  */
 export async function deleteEvent(grantId, calendarId, eventId) {
-  const params = new URLSearchParams({ calendar_id: calendarId });
-  await nylasRequest(`/v3/grants/${grantId}/events/${eventId}?${params}`, {
-    method: "DELETE",
+  await nylas.events.destroy({
+    identifier: grantId,
+    eventId: eventId,
+    queryParams: {
+      calendarId: calendarId,
+    },
   });
   return { success: true };
 }

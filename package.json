@@ -19,6 +19,7 @@
     "@supabase/supabase-js": "^2.45.0",
     "ai": "^4.0.0",
     "dotenv": "^16.4.5",
+    "nylas": "^8.0.3",
     "zod": "^3.23.8"
   },
   "engines": {
