@@ -33,7 +33,8 @@ const PORT = process.env.PORT || 3000;
 const calendariosCache = new Map();
 
 // ⚠️ MODO TEST: Solo permitir operaciones con Luis Villegas (id=154)
-const ASESOR_TEST_ID = 154;
+// Poner null para permitir todos los asesores
+const ASESOR_TEST_ID = null;
 
 // Funciones auxiliares
 function getAhoraEnTimezone(timezone) {
@@ -152,33 +153,46 @@ async function getCitaContacto(contactoId) {
 async function getAsesorByContactoId(contactoId, requireTestMode = false) {
   console.log(`  📋 Buscando contacto: ${contactoId}`);
   
-  const { data: contacto, error: contactoError } = await supabase
-    .from("wp_contactos")
-    .select("asesor_id, empresa_id")
-    .eq("id", contactoId)
+  // Buscar el asesor desde la última cita del contacto (wp_citas tiene team_humano_id)
+  const { data: cita, error: citaError } = await supabase
+    .from("wp_citas")
+    .select("team_humano_id, empresa_id")
+    .eq("contacto_id", contactoId)
+    .neq("estado", "cancelada")
+    .order("fecha_hora", { ascending: false })
+    .limit(1)
     .single();
   
-  if (contactoError) {
-    console.log(`  ❌ Error buscando contacto: ${contactoError.message}`);
-    return null;
+  // Si no hay cita, intentar buscar en wp_contactos con team_humano_id
+  let asesorId = cita?.team_humano_id;
+  let empresaId = cita?.empresa_id;
+  
+  if (!asesorId) {
+    const { data: contacto } = await supabase
+      .from("wp_contactos")
+      .select("team_humano_id, empresa_id")
+      .eq("id", contactoId)
+      .single();
+    asesorId = contacto?.team_humano_id;
+    empresaId = contacto?.empresa_id;
   }
   
-  if (!contacto?.asesor_id) {
+  if (!asesorId) {
     console.log(`  ❌ Contacto no tiene asesor asignado`);
     return null;
   }
   
-  console.log(`  📋 Asesor ID del contacto: ${contacto.asesor_id}`);
+  console.log(`  📋 Asesor ID del contacto: ${asesorId}`);
   
-  if (ASESOR_TEST_ID && requireTestMode && contacto.asesor_id !== ASESOR_TEST_ID) {
-    console.log(`  ⚠️ Bloqueado: asesor ${contacto.asesor_id} != test ${ASESOR_TEST_ID}`);
+  if (ASESOR_TEST_ID && requireTestMode && asesorId !== ASESOR_TEST_ID) {
+    console.log(`  ⚠️ Bloqueado: asesor ${asesorId} != test ${ASESOR_TEST_ID}`);
     return { blocked: true, message: `⚠️ Modo test activo: Solo se permiten operaciones con el asesor de prueba (ID: ${ASESOR_TEST_ID})` };
   }
   
   const { data: asesor, error: asesorError } = await supabase
     .from("wp_team_humano")
     .select("id, nombre, apellido, email, grant_id, timezone, duracion_cita_minutos, disponibilidad")
-    .eq("id", contacto.asesor_id)
+    .eq("id", asesorId)
     .eq("is_active", true)
     .single();
   
@@ -416,6 +430,8 @@ async function crearEventoCalendario(params) {
   const { start, attendeeEmail, summary, description, contacto_id, "Virtual-presencial": modalidad, time_zone_contacto } = params;
   const timezone = time_zone_contacto || "America/Bogota";
 
+  console.log(`  📅 Crear evento para contacto: ${contacto_id}`);
+
   const asesor = await getAsesorByContactoId(contacto_id, true);
   if (!asesor) return { error: "No se encontró asesor asignado al contacto" };
   if (asesor.blocked) return { error: asesor.message };
@@ -423,34 +439,59 @@ async function crearEventoCalendario(params) {
     return { error: "El asesor no tiene calendario configurado" };
   }
 
-  const cal = await getCalendarioPrimario(asesor.grant_id);
-  if (!cal) return { error: "Calendario no encontrado" };
+  console.log(`  👤 Asesor: ${asesor.nombre} ${asesor.apellido} (${asesor.email})`);
+
+  // Usar email del asesor como calendar_id (como en el endpoint de Nylas)
+  const calendarId = asesor.email;
 
   const fechaInicio = new Date(start);
   const startTime = Math.floor(fechaInicio.getTime() / 1000);
   const duracionMin = asesor.duracion_cita_minutos || 60;
   const endTime = startTime + (duracionMin * 60);
 
-  const evento = await createEvent(asesor.grant_id, cal.id, {
+  // Generar link de Google Meet si es virtual
+  const esVirtual = modalidad === "Virtual";
+  
+  const eventData = {
     title: summary,
     description: description || "",
     when: { start_time: startTime, end_time: endTime },
     participants: [{ email: attendeeEmail }],
-    location: modalidad === "Virtual" ? "Reunión Virtual" : "Presencial",
-  });
+  };
+
+  // Agregar conferencing si es virtual
+  if (esVirtual) {
+    eventData.conferencing = {
+      provider: "Google Meet",
+      autocreate: {}
+    };
+  } else {
+    eventData.location = "Presencial";
+  }
+
+  console.log(`  📤 Creando evento en Nylas...`);
+  
+  const evento = await createEvent(asesor.grant_id, calendarId, eventData);
+
+  console.log(`  ✅ Evento creado: ${evento.id}`);
 
   const inicioLocal = fechaInicio.toLocaleString("es-CO", { timeZone: timezone });
+
+  // Obtener link de conferencia si existe
+  const meetLink = evento.conferencing?.details?.url || null;
 
   return {
     success: true,
     event_id: evento.id,
     contacto_id,
     asesor: `${asesor.nombre} ${asesor.apellido}`,
+    asesor_email: asesor.email,
     participante: attendeeEmail,
     inicio: inicioLocal,
     duracion_minutos: duracionMin,
-    modalidad: modalidad || "No especificada",
+    modalidad: modalidad || "Virtual",
     summary,
+    meet_link: meetLink,
   };
 }
 
