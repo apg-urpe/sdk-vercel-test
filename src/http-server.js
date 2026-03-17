@@ -91,6 +91,299 @@ async function getAsesoresByEmpresaId(empresaId) {
   return asesoresConCalendario;
 }
 
+/**
+ * Obtiene el conteo de citas pendientes por asesor
+ */
+async function getConteoCitasPorAsesor(empresaId) {
+  const { data: citas, error } = await supabase
+    .from("wp_citas")
+    .select("team_humano_id")
+    .eq("empresa_id", empresaId)
+    .eq("estado", "pendiente");
+  
+  if (error || !citas) return {};
+  
+  // Contar citas por asesor
+  const conteo = {};
+  citas.forEach(c => {
+    if (c.team_humano_id) {
+      conteo[c.team_humano_id] = (conteo[c.team_humano_id] || 0) + 1;
+    }
+  });
+  return conteo;
+}
+
+/**
+ * Verifica si el contacto tiene una cita con estado "Realizada"
+ * Si la tiene, devuelve el asesor asignado (debe mantenerlo siempre)
+ */
+async function getAsesorFijoDeContacto(contactoId) {
+  // Buscar si tiene alguna cita con estado "Realizada"
+  const { data: citaRealizada, error } = await supabase
+    .from("wp_citas")
+    .select("team_humano_id")
+    .eq("contacto_id", contactoId)
+    .ilike("estado", "%realizada%")
+    .order("fecha_hora", { ascending: false })
+    .limit(1)
+    .single();
+  
+  if (error || !citaRealizada?.team_humano_id) {
+    return null; // No tiene cita realizada, puede asignarse cualquier asesor
+  }
+  
+  // Obtener datos del asesor fijo
+  const { data: asesor } = await supabase
+    .from("wp_team_humano")
+    .select("id, nombre, apellido, email, grant_id, timezone, duracion_cita_minutos, disponibilidad")
+    .eq("id", citaRealizada.team_humano_id)
+    .eq("is_active", true)
+    .single();
+  
+  if (!asesor || !asesor.grant_id || asesor.grant_id === "Solicitud enviada") {
+    console.log(`  ⚠️ Asesor fijo ${citaRealizada.team_humano_id} no tiene calendario configurado`);
+    return null;
+  }
+  
+  console.log(`  🔒 Contacto tiene cita Realizada - Asesor fijo: ${asesor.nombre} ${asesor.apellido}`);
+  return asesor;
+}
+
+/**
+ * Selecciona el mejor asesor para un horario específico
+ * Criterios: 1) Está disponible en ese horario, 2) Tiene menos citas pendientes
+ * IMPORTANTE: Si el contacto tiene cita "Realizada", usa siempre el mismo asesor
+ */
+async function seleccionarMejorAsesor(empresaId, fechaHoraISO, timezone, contactoId = null) {
+  // Si hay contactoId, verificar si tiene asesor fijo (cita Realizada)
+  if (contactoId) {
+    const asesorFijo = await getAsesorFijoDeContacto(contactoId);
+    if (asesorFijo) {
+      // Verificar si el asesor fijo está disponible en ese horario
+      const fechaHora = new Date(fechaHoraISO);
+      const startUnix = Math.floor(fechaHora.getTime() / 1000);
+      const endUnix = startUnix + 3600;
+      
+      try {
+        const freeBusy = await getFreeBusy(asesorFijo.grant_id, asesorFijo.email, startUnix, endUnix);
+        let ocupado = false;
+        
+        if (Array.isArray(freeBusy)) {
+          freeBusy.forEach(fb => {
+            if (fb.time_slots) {
+              fb.time_slots.forEach(slot => {
+                if (slot.status === 'busy' && slot.start_time <= startUnix && slot.end_time > startUnix) {
+                  ocupado = true;
+                }
+              });
+            }
+          });
+        }
+        
+        if (ocupado) {
+          console.log(`  ❌ Asesor fijo ${asesorFijo.nombre} NO está disponible a las ${fechaHora.toLocaleTimeString()}`);
+          return { 
+            error: `El asesor asignado (${asesorFijo.nombre} ${asesorFijo.apellido}) no está disponible en ese horario. Por favor seleccione otro horario.`,
+            asesor_fijo: asesorFijo
+          };
+        }
+        
+        console.log(`  ✅ Asesor fijo ${asesorFijo.nombre} está disponible`);
+        return {
+          asesor: asesorFijo,
+          citas_pendientes: 0,
+          total_disponibles: 1,
+          es_asesor_fijo: true
+        };
+      } catch (e) {
+        console.log(`  ⚠️ Error verificando disponibilidad de asesor fijo: ${e.message}`);
+        return { error: "Error verificando disponibilidad del asesor asignado" };
+      }
+    }
+  }
+  
+  // Sin asesor fijo, usar lógica normal
+  const asesores = await getAsesoresByEmpresaId(empresaId);
+  if (asesores.length === 0) return null;
+  
+  const fechaHora = new Date(fechaHoraISO);
+  const startUnix = Math.floor(fechaHora.getTime() / 1000);
+  const endUnix = startUnix + 3600; // 1 hora de ventana
+  
+  // Obtener free/busy de todos los asesores en paralelo
+  const freeBusyResults = await Promise.all(
+    asesores.map(asesor => 
+      getFreeBusy(asesor.grant_id, asesor.email, startUnix, endUnix)
+        .then(freeBusy => ({ asesor, freeBusy, ok: true }))
+        .catch(() => ({ asesor, freeBusy: null, ok: false }))
+    )
+  );
+  
+  // Filtrar asesores disponibles en ese horario
+  const asesoresDisponibles = freeBusyResults.filter(r => {
+    if (!r.ok || !r.freeBusy) return false;
+    
+    // Verificar que no tenga eventos ocupados en ese horario
+    let ocupado = false;
+    if (Array.isArray(r.freeBusy)) {
+      r.freeBusy.forEach(fb => {
+        if (fb.time_slots) {
+          fb.time_slots.forEach(slot => {
+            if (slot.status === 'busy') {
+              // Verificar si el slot ocupado se superpone con el horario deseado
+              if (slot.start_time <= startUnix && slot.end_time > startUnix) {
+                ocupado = true;
+              }
+            }
+          });
+        }
+      });
+    }
+    return !ocupado;
+  }).map(r => r.asesor);
+  
+  if (asesoresDisponibles.length === 0) {
+    console.log(`  ❌ No hay asesores disponibles a las ${fechaHoraISO}`);
+    return null;
+  }
+  
+  console.log(`  ✅ ${asesoresDisponibles.length} asesores disponibles a las ${fechaHora.toLocaleTimeString()}`);
+  
+  // Obtener conteo de citas pendientes
+  const conteoCitas = await getConteoCitasPorAsesor(empresaId);
+  
+  // Ordenar por cantidad de citas (menor primero)
+  asesoresDisponibles.sort((a, b) => {
+    const citasA = conteoCitas[a.id] || 0;
+    const citasB = conteoCitas[b.id] || 0;
+    return citasA - citasB;
+  });
+  
+  // Mostrar ranking
+  console.log(`  📊 Ranking de asesores disponibles:`);
+  asesoresDisponibles.slice(0, 5).forEach((a, i) => {
+    console.log(`     ${i+1}. ${a.nombre} ${a.apellido} - ${conteoCitas[a.id] || 0} citas pendientes`);
+  });
+  
+  return {
+    asesor: asesoresDisponibles[0],
+    citas_pendientes: conteoCitas[asesoresDisponibles[0].id] || 0,
+    total_disponibles: asesoresDisponibles.length
+  };
+}
+
+/**
+ * Actualiza el team_humano_id en wp_contactos cuando se asigna/cambia un asesor
+ */
+async function actualizarAsesorEnContacto(contactoId, nuevoAsesorId) {
+  console.log(`  📝 Actualizando asesor ${nuevoAsesorId} en wp_contactos para contacto ${contactoId}`);
+  
+  const ahora = new Date().toISOString();
+  
+  const { error } = await supabase
+    .from("wp_contactos")
+    .update({ team_humano_id: nuevoAsesorId, updated_at: ahora })
+    .eq("id", contactoId);
+  
+  if (error) {
+    console.log(`  ⚠️ Error actualizando wp_contactos: ${error.message}`);
+    return false;
+  }
+  
+  console.log(`  ✅ wp_contactos actualizado`);
+  return true;
+}
+
+/**
+ * Crea o actualiza la cita en wp_citas
+ */
+async function guardarCitaEnSupabase(params) {
+  const { contactoId, empresaId, asesorId, eventId, fechaHora, duracion, titulo, ubicacion, modalidad, estado = "pendiente" } = params;
+  
+  console.log(`  📝 Guardando cita en Supabase...`);
+  
+  const ahora = new Date().toISOString();
+  
+  // Verificar si ya existe una cita con este event_id
+  const { data: citaExistente } = await supabase
+    .from("wp_citas")
+    .select("id")
+    .eq("event_id", eventId)
+    .single();
+  
+  if (citaExistente) {
+    // Actualizar cita existente
+    const { error } = await supabase
+      .from("wp_citas")
+      .update({
+        team_humano_id: asesorId,
+        fecha_hora: fechaHora,
+        duracion: duracion,
+        titulo: titulo,
+        ubicacion: ubicacion,
+        estado: estado,
+        updated_at: ahora,
+        sincronizacion: "sincronizado"
+      })
+      .eq("id", citaExistente.id);
+    
+    if (error) {
+      console.log(`  ⚠️ Error actualizando wp_citas: ${error.message}`);
+    } else {
+      console.log(`  ✅ wp_citas actualizado (id: ${citaExistente.id})`);
+    }
+    return citaExistente.id;
+  } else {
+    // Crear nueva cita
+    const { data: nuevaCita, error } = await supabase
+      .from("wp_citas")
+      .insert({
+        contacto_id: contactoId,
+        empresa_id: empresaId,
+        team_humano_id: asesorId,
+        event_id: eventId,
+        fecha_hora: fechaHora,
+        duracion: duracion,
+        titulo: titulo,
+        ubicacion: ubicacion,
+        estado: estado,
+        created_at: ahora,
+        updated_at: ahora,
+        sincronizacion: "sincronizado"
+      })
+      .select("id")
+      .single();
+    
+    if (error) {
+      console.log(`  ⚠️ Error insertando wp_citas: ${error.message}`);
+      return null;
+    } else {
+      console.log(`  ✅ wp_citas insertado (id: ${nuevaCita.id})`);
+      return nuevaCita.id;
+    }
+  }
+}
+
+/**
+ * Actualiza el estado de una cita en wp_citas
+ */
+async function actualizarEstadoCita(eventId, nuevoEstado) {
+  const ahora = new Date().toISOString();
+  
+  const { error } = await supabase
+    .from("wp_citas")
+    .update({ estado: nuevoEstado, updated_at: ahora })
+    .eq("event_id", eventId);
+  
+  if (error) {
+    console.log(`  ⚠️ Error actualizando estado de cita: ${error.message}`);
+    return false;
+  }
+  
+  console.log(`  ✅ Estado de cita actualizado a: ${nuevoEstado}`);
+  return true;
+}
+
 async function getCitaContacto(contactoId) {
   // Buscar la cita más reciente del contacto (cualquier estado excepto cancelada)
   const { data: citas, error: citaError } = await supabase
@@ -308,11 +601,20 @@ async function disponibilidadAgenda(contactoId, empresaId, timeZoneContacto) {
   
   const startTime = Date.now();
   
-  // Obtener info de cita del contacto en paralelo con asesores
-  const [citaInfo, asesores] = await Promise.all([
-    getCitaContacto(contactoId),
-    getAsesoresByEmpresaId(empresaId)
-  ]);
+  // Verificar si el contacto tiene asesor fijo (cita Realizada)
+  const asesorFijo = await getAsesorFijoDeContacto(contactoId);
+  
+  // Obtener info de cita del contacto
+  const citaInfo = await getCitaContacto(contactoId);
+  
+  // Si tiene asesor fijo, solo mostrar disponibilidad de ese asesor
+  let asesores;
+  if (asesorFijo) {
+    console.log(`  🔒 Contacto tiene asesor fijo: ${asesorFijo.nombre} ${asesorFijo.apellido}`);
+    asesores = [asesorFijo];
+  } else {
+    asesores = await getAsesoresByEmpresaId(empresaId);
+  }
   
   if (asesores.length === 0) {
     return { error: "No se encontraron asesores con calendario configurado para esta empresa" };
@@ -411,6 +713,12 @@ async function disponibilidadAgenda(contactoId, empresaId, timeZoneContacto) {
   
   return {
     cita_actual: citaActual,
+    asesor_fijo: asesorFijo ? {
+      id: asesorFijo.id,
+      nombre: `${asesorFijo.nombre} ${asesorFijo.apellido}`,
+      email: asesorFijo.email,
+      mensaje: "Este contacto tiene una cita Realizada. Solo se muestra disponibilidad de su asesor asignado."
+    } : null,
     contacto_id: contactoId,
     empresa_id: empresaId,
     time_zone: timezone,
@@ -427,26 +735,50 @@ async function disponibilidadAgenda(contactoId, empresaId, timeZoneContacto) {
 // TOOL 2: Crear_Evento_Calendario
 // ============================================
 async function crearEventoCalendario(params) {
-  const { start, attendeeEmail, summary, description, contacto_id, "Virtual-presencial": modalidad, time_zone_contacto } = params;
+  const { start, attendeeEmail, summary, description, contacto_id, empresa_id, "Virtual-presencial": modalidad, time_zone_contacto } = params;
   const timezone = time_zone_contacto || "America/Bogota";
 
-  console.log(`  📅 Crear evento para contacto: ${contacto_id}`);
+  console.log(`  📅 Crear evento - Contacto: ${contacto_id}, Empresa: ${empresa_id}`);
+  console.log(`  📅 Horario solicitado: ${start}`);
 
-  const asesor = await getAsesorByContactoId(contacto_id, true);
-  if (!asesor) return { error: "No se encontró asesor asignado al contacto" };
-  if (asesor.blocked) return { error: asesor.message };
-  if (!asesor.grant_id || asesor.grant_id === "Solicitud enviada") {
-    return { error: "El asesor no tiene calendario configurado" };
+  // Obtener empresa_id del contacto si no viene en params
+  let empresaIdFinal = empresa_id;
+  if (!empresaIdFinal) {
+    const { data: contacto } = await supabase
+      .from("wp_contactos")
+      .select("empresa_id")
+      .eq("id", contacto_id)
+      .single();
+    empresaIdFinal = contacto?.empresa_id;
   }
 
-  console.log(`  👤 Asesor: ${asesor.nombre} ${asesor.apellido} (${asesor.email})`);
+  if (!empresaIdFinal) {
+    return { error: "No se pudo determinar la empresa del contacto" };
+  }
 
-  // Usar email del asesor como calendar_id (como en el endpoint de Nylas)
+  // Seleccionar el mejor asesor: disponible en ese horario + menos citas
+  // Si el contacto tiene cita "Realizada", se mantiene el mismo asesor
+  console.log(`  🔍 Buscando mejor asesor disponible...`);
+  const seleccion = await seleccionarMejorAsesor(empresaIdFinal, start, timezone, contacto_id);
+  
+  if (!seleccion) {
+    return { error: "No hay asesores disponibles en ese horario" };
+  }
+  
+  // Si hay error (asesor fijo no disponible)
+  if (seleccion.error) {
+    return { error: seleccion.error };
+  }
+
+  const asesor = seleccion.asesor;
+  console.log(`  ✅ Asesor seleccionado: ${asesor.nombre} ${asesor.apellido} (${seleccion.citas_pendientes} citas pendientes)`);
+
+  // Usar email del asesor como calendar_id
   const calendarId = asesor.email;
 
   const fechaInicio = new Date(start);
   const startTime = Math.floor(fechaInicio.getTime() / 1000);
-  const duracionMin = asesor.duracion_cita_minutos || 60;
+  const duracionMin = asesor.duracion_cita_minutos || 30;
   const endTime = startTime + (duracionMin * 60);
 
   // Generar link de Google Meet si es virtual
@@ -475,17 +807,37 @@ async function crearEventoCalendario(params) {
 
   console.log(`  ✅ Evento creado: ${evento.id}`);
 
-  const inicioLocal = fechaInicio.toLocaleString("es-CO", { timeZone: timezone });
-
   // Obtener link de conferencia si existe
   const meetLink = evento.conferencing?.details?.url || null;
+
+  // Guardar cita en Supabase
+  await guardarCitaEnSupabase({
+    contactoId: contacto_id,
+    empresaId: empresaIdFinal,
+    asesorId: asesor.id,
+    eventId: evento.id,
+    fechaHora: fechaInicio.toISOString(),
+    duracion: duracionMin,
+    titulo: summary,
+    ubicacion: meetLink || (esVirtual ? "Virtual" : "Presencial"),
+    modalidad: modalidad || "Virtual",
+    estado: "pendiente"
+  });
+
+  // Actualizar asesor en wp_contactos
+  await actualizarAsesorEnContacto(contacto_id, asesor.id);
+
+  const inicioLocal = fechaInicio.toLocaleString("es-CO", { timeZone: timezone });
 
   return {
     success: true,
     event_id: evento.id,
     contacto_id,
+    asesor_id: asesor.id,
     asesor: `${asesor.nombre} ${asesor.apellido}`,
     asesor_email: asesor.email,
+    asesor_citas_pendientes: seleccion.citas_pendientes,
+    asesores_disponibles: seleccion.total_disponibles,
     participante: attendeeEmail,
     inicio: inicioLocal,
     duracion_minutos: duracionMin,
@@ -499,66 +851,216 @@ async function crearEventoCalendario(params) {
 // TOOL 3: Reagendar_Evento
 // ============================================
 async function reagendarEvento(params) {
-  const { event_id, start, attendeeEmail, summary, description, contacto_id, "Virtual-presencial": modalidad, time_zone_contacto, Duracion_minutos } = params;
+  const { event_id, start, attendeeEmail, summary, description, contacto_id, empresa_id, "Virtual-presencial": modalidad, time_zone_contacto, Duracion_minutos } = params;
   const timezone = time_zone_contacto || "America/Bogota";
 
-  const asesor = await getAsesorByContactoId(contacto_id, true);
-  if (!asesor) return { error: "No se encontró asesor asignado al contacto" };
-  if (asesor.blocked) return { error: asesor.message };
-  if (!asesor.grant_id || asesor.grant_id === "Solicitud enviada") {
-    return { error: "El asesor no tiene calendario configurado" };
+  console.log(`  📅 Reagendar evento: ${event_id}`);
+  console.log(`  📅 Nuevo horario: ${start}`);
+
+  // Buscar la cita en wp_citas para obtener info actual
+  const { data: cita, error: citaError } = await supabase
+    .from("wp_citas")
+    .select("team_humano_id, empresa_id, event_id")
+    .eq("event_id", event_id)
+    .single();
+
+  if (citaError || !cita) {
+    console.log(`  ❌ Cita no encontrada con event_id: ${event_id}`);
+    return { error: "No se encontró la cita con ese event_id" };
   }
 
-  const cal = await getCalendarioPrimario(asesor.grant_id);
-  if (!cal) return { error: "Calendario no encontrado" };
+  const empresaIdFinal = empresa_id || cita.empresa_id;
 
+  // Obtener el asesor actual de la cita
+  const { data: asesorActual } = await supabase
+    .from("wp_team_humano")
+    .select("id, nombre, apellido, email, grant_id, duracion_cita_minutos")
+    .eq("id", cita.team_humano_id)
+    .single();
+
+  console.log(`  👤 Asesor actual: ${asesorActual?.nombre} ${asesorActual?.apellido}`);
+
+  // Seleccionar el mejor asesor disponible para el nuevo horario
+  // Si el contacto tiene cita "Realizada", se mantiene el mismo asesor
+  console.log(`  🔍 Verificando disponibilidad para el nuevo horario...`);
+  const seleccion = await seleccionarMejorAsesor(empresaIdFinal, start, timezone, contacto_id);
+  
+  if (!seleccion) {
+    return { error: "No hay asesores disponibles en ese horario" };
+  }
+  
+  // Si hay error (asesor fijo no disponible)
+  if (seleccion.error) {
+    return { error: seleccion.error };
+  }
+
+  const asesorNuevo = seleccion.asesor;
+  const cambioAsesor = !seleccion.es_asesor_fijo && asesorActual?.id !== asesorNuevo.id;
+  
+  if (cambioAsesor) {
+    console.log(`  � Cambio de asesor: ${asesorActual?.nombre} → ${asesorNuevo.nombre} ${asesorNuevo.apellido}`);
+  } else {
+    console.log(`  ✅ Mismo asesor disponible: ${asesorNuevo.nombre} ${asesorNuevo.apellido}`);
+  }
+
+  // Si hay cambio de asesor, eliminar evento anterior y crear nuevo
+  // Si es el mismo asesor, solo actualizar
+  const calendarId = asesorNuevo.email;
   const fechaInicio = new Date(start);
   const startTime = Math.floor(fechaInicio.getTime() / 1000);
-  const duracionMin = Duracion_minutos ? parseInt(Duracion_minutos) : (asesor.duracion_cita_minutos || 60);
+  const duracionMin = Duracion_minutos ? parseInt(Duracion_minutos) : (asesorNuevo.duracion_cita_minutos || 30);
   const endTime = startTime + (duracionMin * 60);
 
-  const updateData = {
-    when: { start_time: startTime, end_time: endTime },
-  };
-  
-  if (summary) updateData.title = summary;
-  if (description) updateData.description = description;
-  if (attendeeEmail) updateData.participants = [{ email: attendeeEmail }];
-  if (modalidad) updateData.location = modalidad === "Virtual" ? "Reunión Virtual" : "Presencial";
+  let evento;
+  let nuevoEventId = event_id;
 
-  const evento = await updateEvent(asesor.grant_id, cal.id, event_id, updateData);
+  if (cambioAsesor && asesorActual?.grant_id) {
+    // Eliminar evento del asesor anterior
+    console.log(`  🗑️ Eliminando evento del asesor anterior...`);
+    try {
+      await deleteEvent(asesorActual.grant_id, asesorActual.email, event_id);
+    } catch (e) {
+      console.log(`  ⚠️ No se pudo eliminar evento anterior: ${e.message}`);
+    }
+
+    // Crear nuevo evento con el nuevo asesor
+    console.log(`  📤 Creando evento con nuevo asesor...`);
+    const eventData = {
+      title: summary || "Cita reagendada",
+      description: description || "",
+      when: { start_time: startTime, end_time: endTime },
+      participants: [{ email: attendeeEmail }],
+    };
+
+    if (modalidad === "Virtual") {
+      eventData.conferencing = { provider: "Google Meet", autocreate: {} };
+    } else {
+      eventData.location = "Presencial";
+    }
+
+    evento = await createEvent(asesorNuevo.grant_id, calendarId, eventData);
+    nuevoEventId = evento.id;
+  } else {
+    // Mismo asesor, solo actualizar
+    const updateData = {
+      when: { start_time: startTime, end_time: endTime },
+    };
+    
+    if (summary) updateData.title = summary;
+    if (description) updateData.description = description;
+    if (attendeeEmail) updateData.participants = [{ email: attendeeEmail }];
+    
+    if (modalidad === "Virtual") {
+      updateData.conferencing = { provider: "Google Meet", autocreate: {} };
+    } else if (modalidad === "Presencial") {
+      updateData.location = "Presencial";
+    }
+
+    console.log(`  📤 Actualizando evento en Nylas...`);
+    evento = await updateEvent(asesorNuevo.grant_id, calendarId, event_id, updateData);
+  }
+
+  console.log(`  ✅ Evento ${cambioAsesor ? 'creado' : 'actualizado'}: ${evento.id}`);
+
+  const meetLink = evento.conferencing?.details?.url || null;
+
+  // Actualizar cita en Supabase
+  await guardarCitaEnSupabase({
+    contactoId: contacto_id || cita.contacto_id,
+    empresaId: empresaIdFinal,
+    asesorId: asesorNuevo.id,
+    eventId: evento.id,
+    fechaHora: fechaInicio.toISOString(),
+    duracion: duracionMin,
+    titulo: summary || "Cita reagendada",
+    ubicacion: meetLink || (modalidad === "Virtual" ? "Virtual" : "Presencial"),
+    modalidad: modalidad || "Virtual",
+    estado: "reagendada"
+  });
+
+  // Si hubo cambio de asesor, actualizar en wp_contactos
+  if (cambioAsesor) {
+    await actualizarAsesorEnContacto(contacto_id || cita.contacto_id, asesorNuevo.id);
+  }
 
   const inicioLocal = fechaInicio.toLocaleString("es-CO", { timeZone: timezone });
 
   return {
     success: true,
     event_id: evento.id,
-    contacto_id,
+    event_id_anterior: cambioAsesor ? event_id : null,
+    contacto_id: contacto_id || cita.contacto_id,
+    asesor_anterior: cambioAsesor ? `${asesorActual?.nombre} ${asesorActual?.apellido}` : null,
+    asesor_id: asesorNuevo.id,
+    asesor: `${asesorNuevo.nombre} ${asesorNuevo.apellido}`,
+    asesor_email: asesorNuevo.email,
+    asesor_citas_pendientes: seleccion.citas_pendientes,
+    cambio_asesor: cambioAsesor,
     nuevo_inicio: inicioLocal,
     duracion_minutos: duracionMin,
-    mensaje: "Evento reagendado correctamente",
+    modalidad: modalidad || "Virtual",
+    meet_link: meetLink,
+    mensaje: cambioAsesor 
+      ? `Evento reagendado con nuevo asesor: ${asesorNuevo.nombre} ${asesorNuevo.apellido}` 
+      : "Evento reagendado correctamente",
   };
 }
 
 // ============================================
 // TOOL 4: Eliminar_Evento
 // ============================================
-async function eliminarEvento(eventId, contactoId) {
-  const asesor = await getAsesorByContactoId(contactoId, true);
-  if (!asesor) return { error: "No se encontró asesor asignado al contacto" };
-  if (asesor.blocked) return { error: asesor.message };
+async function eliminarEvento(params) {
+  const { event_id, contacto_id } = params;
+  
+  console.log(`  🗑️ Eliminar evento: ${event_id}`);
+
+  // Buscar la cita en wp_citas para obtener el asesor
+  const { data: cita, error: citaError } = await supabase
+    .from("wp_citas")
+    .select("team_humano_id, empresa_id, contacto_id")
+    .eq("event_id", event_id)
+    .single();
+
+  if (citaError || !cita) {
+    console.log(`  ❌ Cita no encontrada con event_id: ${event_id}`);
+    return { error: "No se encontró la cita con ese event_id" };
+  }
+
+  // Obtener el asesor de la cita
+  const { data: asesor, error: asesorError } = await supabase
+    .from("wp_team_humano")
+    .select("id, nombre, apellido, email, grant_id")
+    .eq("id", cita.team_humano_id)
+    .single();
+
+  if (asesorError || !asesor) {
+    return { error: "No se encontró el asesor de la cita" };
+  }
+
   if (!asesor.grant_id || asesor.grant_id === "Solicitud enviada") {
     return { error: "El asesor no tiene calendario configurado" };
   }
 
-  const cal = await getCalendarioPrimario(asesor.grant_id);
-  if (!cal) return { error: "Calendario no encontrado" };
+  console.log(`  👤 Asesor: ${asesor.nombre} ${asesor.apellido} (${asesor.email})`);
 
-  await deleteEvent(asesor.grant_id, cal.id, eventId);
+  // Usar email del asesor como calendar_id
+  const calendarId = asesor.email;
+
+  console.log(`  📤 Eliminando evento en Nylas...`);
+  
+  await deleteEvent(asesor.grant_id, calendarId, event_id);
+
+  console.log(`  ✅ Evento eliminado`);
+
+  // Actualizar estado de la cita en Supabase a "cancelada"
+  await actualizarEstadoCita(event_id, "cancelada");
 
   return {
     success: true,
-    event_id: eventId,
+    event_id,
+    contacto_id: contacto_id || cita.contacto_id,
+    asesor: `${asesor.nombre} ${asesor.apellido}`,
+    asesor_email: asesor.email,
     mensaje: "Evento eliminado correctamente",
   };
 }
@@ -649,8 +1151,8 @@ const server = http.createServer(async (req, res) => {
         break;
       
       case "/eliminar-evento":
-        console.log(`[${requestId}] Ejecutando: eliminarEvento(${body.event_id}, ${body.contacto_id})`);
-        result = await eliminarEvento(body.event_id, body.contacto_id);
+        console.log(`[${requestId}] Ejecutando: eliminarEvento`);
+        result = await eliminarEvento(body);
         break;
       
       default:
