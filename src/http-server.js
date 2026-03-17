@@ -538,7 +538,9 @@ function calcularSlots(fecha, eventos, disponibilidad, duracionMinutos, timezone
   const horariosNormales = disponibilidad?.horarios_normales?.[dia] || [];
   if (horariosNormales.length === 0) return slots;
   
-  const ahoraTz = getAhoraEnTimezone(timezone);
+  // Usar timestamp Unix actual (universal, no depende de timezone)
+  const ahoraUnix = Math.floor(Date.now() / 1000);
+  
   const ocupados = (eventos || []).map(e => ({
     start: e.when?.start_time || 0,
     end: e.when?.end_time || 0,
@@ -565,7 +567,8 @@ function calcularSlots(fecha, eventos, disponibilidad, duracionMinutos, timezone
         (startUnix <= o.start && endUnix >= o.end)
       );
 
-      if (!estaOcupado && slotStart.getTime() > ahoraTz.getTime()) {
+      // Comparar usando Unix timestamps (universal)
+      if (!estaOcupado && startUnix > ahoraUnix) {
         const horaLocal = slotStart.toLocaleTimeString("es-CO", { 
           timeZone: timezone, hour: "2-digit", minute: "2-digit", hour12: true 
         });
