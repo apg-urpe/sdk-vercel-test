@@ -1155,29 +1155,48 @@ async function obtenerGrabaciones(params) {
     }
   }
   
-  // Si viene grant_id, listar todos los notetakers de ese grant
+  // Si viene grant_id, listar todos los notetakers y obtener URLs de media automáticamente
   if (grant_id) {
     console.log(`  📋 Listando notetakers del grant: ${grant_id}`);
     try {
       const notetakers = await listNotetakers(grant_id);
       
       // Filtrar solo los que tienen grabaciones disponibles
-      const grabaciones = notetakers
-        .filter(n => n.state === 'available')
-        .map(n => ({
-          notetaker_id: n.id,
-          meeting_link: n.meeting_link,
-          meeting_provider: n.meeting_provider,
-          estado: n.state,
-          join_time: n.join_time ? new Date(n.join_time * 1000).toISOString() : null,
-        }));
+      const notetakersDisponibles = notetakers.filter(n => n.state === 'available');
+      
+      // Obtener media de cada notetaker en paralelo
+      const grabaciones = await Promise.all(
+        notetakersDisponibles.map(async (n) => {
+          let media = null;
+          try {
+            media = await getNotetakerMedia(n.id);
+          } catch (e) {
+            console.log(`  ⚠️ No se pudo obtener media de ${n.id}: ${e.message}`);
+          }
+          
+          return {
+            notetaker_id: n.id,
+            meeting_link: n.meeting_link,
+            meeting_provider: n.meeting_provider,
+            estado: n.state,
+            join_time: n.join_time ? new Date(n.join_time * 1000).toISOString() : null,
+            media: media ? {
+              recording_url: media.recording || null,
+              recording_duration: media.recording_duration || null,
+              transcript_url: media.transcript || null,
+              summary_url: media.summary || null,
+              action_items_url: media.action_items || null,
+            } : null
+          };
+        })
+      );
       
       return {
         success: true,
         grant_id,
         total: grabaciones.length,
         grabaciones,
-        mensaje: "Para obtener URLs de media, usa notetaker_id específico"
+        mensaje: "URLs válidas por 60 minutos. Archivos disponibles por 14 días."
       };
     } catch (e) {
       return { error: `No se pudo listar notetakers: ${e.message}` };
