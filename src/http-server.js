@@ -1124,9 +1124,22 @@ async function eliminarEvento(params) {
 // TOOL 5: Obtener Grabaciones de Reuniones
 // ============================================
 async function obtenerGrabaciones(params) {
-  const { contacto_id, empresa_id, grant_id, grant_ids, notetaker_id } = params;
+  let { contacto_id, empresa_id, grant_id, grant_ids, notetaker_id } = params;
   
   console.log(`  🎥 Obtener grabaciones`);
+  
+  // Si grant_ids viene como string separado por comas, convertir a array
+  if (grant_ids && typeof grant_ids === 'string') {
+    grant_ids = grant_ids.split(',').map(g => g.trim()).filter(g => g.length > 0);
+    console.log(`  📋 Convertido string a array: ${grant_ids.length} grants`);
+  }
+  
+  // Si grant_id viene como string con comas, tratarlo como grant_ids
+  if (grant_id && typeof grant_id === 'string' && grant_id.includes(',')) {
+    grant_ids = grant_id.split(',').map(g => g.trim()).filter(g => g.length > 0);
+    grant_id = null;
+    console.log(`  📋 grant_id contenía múltiples valores, convertido a array: ${grant_ids.length} grants`);
+  }
   
   // Si viene notetaker_id específico, obtener solo ese
   if (notetaker_id) {
