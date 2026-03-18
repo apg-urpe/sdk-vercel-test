@@ -135,3 +135,40 @@ export async function deleteEvent(grantId, calendarId, eventId) {
   });
   return { success: true };
 }
+
+// ============================================
+// NOTETAKER API - Grabaciones de reuniones
+// ============================================
+
+/**
+ * Lista los notetakers de un grant (reuniones grabadas)
+ * @param {string} grantId - Grant ID del asesor
+ */
+export async function listNotetakers(grantId) {
+  const response = await nylas.notetakers.list({
+    identifier: grantId,
+  });
+  return response.data;
+}
+
+/**
+ * Obtiene un notetaker específico por ID
+ * @param {string} notetakerId - ID del notetaker
+ */
+export async function getNotetaker(notetakerId) {
+  const response = await nylas.notetakers.find({
+    notetakerId: notetakerId,
+  });
+  return response.data;
+}
+
+/**
+ * Obtiene los archivos de media (grabación, transcripción, etc) de un notetaker
+ * @param {string} notetakerId - ID del notetaker
+ */
+export async function getNotetakerMedia(notetakerId) {
+  const response = await nylas.notetakers.downloadMedia({
+    notetakerId: notetakerId,
+  });
+  return response.data;
+}

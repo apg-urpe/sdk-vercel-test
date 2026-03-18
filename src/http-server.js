@@ -23,7 +23,7 @@ console.log(`   NYLAS_API_URL: ${process.env.NYLAS_API_URL ? "✅" : "❌ FALTA"
 console.log(`   PORT: ${process.env.PORT || "3000 (default)"}`);
 
 import { supabase } from "./lib/supabase.js";
-import { getCalendars, getEvents, getFreeBusy, createEvent, updateEvent, deleteEvent } from "./lib/nylas.js";
+import { getCalendars, getEvents, getFreeBusy, createEvent, updateEvent, deleteEvent, listNotetakers, getNotetaker, getNotetakerMedia } from "./lib/nylas.js";
 
 console.log("✅ Módulos importados correctamente");
 
@@ -1121,6 +1121,128 @@ async function eliminarEvento(params) {
 }
 
 // ============================================
+// TOOL 5: Obtener Grabaciones de Reuniones
+// ============================================
+async function obtenerGrabaciones(params) {
+  const { contacto_id, empresa_id, grant_id, notetaker_id } = params;
+  
+  console.log(`  🎥 Obtener grabaciones`);
+  
+  // Si viene notetaker_id específico, obtener solo ese
+  if (notetaker_id) {
+    console.log(`  📹 Buscando notetaker específico: ${notetaker_id}`);
+    try {
+      const notetaker = await getNotetaker(notetaker_id);
+      const media = await getNotetakerMedia(notetaker_id);
+      
+      return {
+        success: true,
+        notetaker_id,
+        estado: notetaker.state,
+        meeting_link: notetaker.meeting_link,
+        meeting_provider: notetaker.meeting_provider,
+        media: {
+          recording_url: media?.recording || null,
+          recording_duration: media?.recording_duration || null,
+          transcript_url: media?.transcript || null,
+          summary_url: media?.summary || null,
+          action_items_url: media?.action_items || null,
+        },
+        mensaje: "URLs válidas por 60 minutos"
+      };
+    } catch (e) {
+      return { error: `No se pudo obtener el notetaker: ${e.message}` };
+    }
+  }
+  
+  // Si viene grant_id, listar todos los notetakers de ese grant
+  if (grant_id) {
+    console.log(`  📋 Listando notetakers del grant: ${grant_id}`);
+    try {
+      const notetakers = await listNotetakers(grant_id);
+      
+      // Filtrar solo los que tienen grabaciones disponibles
+      const grabaciones = notetakers
+        .filter(n => n.state === 'available')
+        .map(n => ({
+          notetaker_id: n.id,
+          meeting_link: n.meeting_link,
+          meeting_provider: n.meeting_provider,
+          estado: n.state,
+          join_time: n.join_time ? new Date(n.join_time * 1000).toISOString() : null,
+        }));
+      
+      return {
+        success: true,
+        grant_id,
+        total: grabaciones.length,
+        grabaciones,
+        mensaje: "Para obtener URLs de media, usa notetaker_id específico"
+      };
+    } catch (e) {
+      return { error: `No se pudo listar notetakers: ${e.message}` };
+    }
+  }
+  
+  // Si viene contacto_id, buscar citas del contacto y sus grabaciones
+  if (contacto_id) {
+    console.log(`  👤 Buscando grabaciones del contacto: ${contacto_id}`);
+    
+    // Obtener citas del contacto con estado "Realizada"
+    const { data: citas, error: citasError } = await supabase
+      .from("wp_citas")
+      .select("id, event_id, team_humano_id, fecha_hora, titulo, estado, ubicacion")
+      .eq("contacto_id", contacto_id)
+      .eq("estado", "Realizada")
+      .order("fecha_hora", { ascending: false });
+    
+    if (citasError) {
+      return { error: `Error buscando citas: ${citasError.message}` };
+    }
+    
+    if (!citas || citas.length === 0) {
+      return { 
+        success: true, 
+        contacto_id,
+        total: 0,
+        grabaciones: [],
+        mensaje: "No hay citas realizadas para este contacto"
+      };
+    }
+    
+    // Para cada cita, obtener info del asesor
+    const grabaciones = [];
+    for (const cita of citas) {
+      const { data: asesor } = await supabase
+        .from("wp_team_humano")
+        .select("id, nombre, apellido, email, grant_id")
+        .eq("id", cita.team_humano_id)
+        .single();
+      
+      grabaciones.push({
+        cita_id: cita.id,
+        event_id: cita.event_id,
+        fecha: cita.fecha_hora,
+        titulo: cita.titulo,
+        asesor: asesor ? `${asesor.nombre} ${asesor.apellido}` : null,
+        grant_id: asesor?.grant_id,
+        meet_link: cita.ubicacion,
+      });
+    }
+    
+    return {
+      success: true,
+      contacto_id,
+      total: grabaciones.length,
+      grabaciones,
+      mensaje: "Para obtener URLs de grabación, usa el grant_id del asesor para listar notetakers"
+    };
+  }
+  
+  return { error: "Se requiere contacto_id, grant_id o notetaker_id" };
+}
+
+// ============================================
 // HTTP Server
 // ============================================
 function parseBody(req) {
@@ -1210,6 +1332,11 @@ const server = http.createServer(async (req, res) => {
         result = await eliminarEvento(body);
         break;
       
+      case "/grabaciones":
+        console.log(`[${requestId}] Ejecutando: obtenerGrabaciones`);
+        result = await obtenerGrabaciones(body);
+        break;
+      
       default:
         return sendJSON(res, { error: "Endpoint not found" }, 404);
     }
@@ -1238,4 +1365,5 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`   POST /crear-evento`);
   console.log(`   POST /reagendar-evento`);
   console.log(`   POST /eliminar-evento`);
+  console.log(`   POST /grabaciones`);
 });
