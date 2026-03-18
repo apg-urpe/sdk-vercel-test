@@ -180,3 +180,20 @@ export async function getNotetakerMedia(notetakerId) {
   });
   return response.data;
 }
+
+/**
+ * Invita al Notetaker a una reunión para grabarla
+ * @param {string} meetingLink - URL de la reunión (Google Meet, Zoom, etc)
+ * @param {object} options - Opciones adicionales
+ */
+export async function inviteNotetaker(meetingLink, options = {}) {
+  const requestBody = {
+    meeting_link: meetingLink,
+    ...options
+  };
+  
+  const response = await nylas.notetakers.invite({
+    requestBody: requestBody,
+  });
+  return response.data;
+}

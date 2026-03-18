@@ -23,7 +23,7 @@ console.log(`   NYLAS_API_URL: ${process.env.NYLAS_API_URL ? "✅" : "❌ FALTA"
 console.log(`   PORT: ${process.env.PORT || "3000 (default)"}`);
 
 import { supabase } from "./lib/supabase.js";
-import { getCalendars, getEvents, getFreeBusy, createEvent, updateEvent, deleteEvent, listNotetakers, listAllNotetakers, getNotetaker, getNotetakerMedia } from "./lib/nylas.js";
+import { getCalendars, getEvents, getFreeBusy, createEvent, updateEvent, deleteEvent, listNotetakers, listAllNotetakers, getNotetaker, getNotetakerMedia, inviteNotetaker } from "./lib/nylas.js";
 
 console.log("✅ Módulos importados correctamente");
 
@@ -859,6 +859,19 @@ async function crearEventoCalendario(params) {
   // Obtener link de conferencia si existe
   const meetLink = evento.conferencing?.details?.url || null;
 
+  // Si es virtual y tiene meet link, invitar al Notetaker para grabar
+  let notetakerId = null;
+  if (esVirtual && meetLink) {
+    console.log(`  🎥 Invitando Notetaker para grabar la reunión...`);
+    try {
+      const notetaker = await inviteNotetaker(meetLink);
+      notetakerId = notetaker.id;
+      console.log(`  ✅ Notetaker invitado: ${notetakerId}`);
+    } catch (e) {
+      console.log(`  ⚠️ No se pudo invitar al Notetaker: ${e.message}`);
+    }
+  }
+
   // Guardar cita en Supabase
   await guardarCitaEnSupabase({
     contactoId: contacto_id,
@@ -893,6 +906,8 @@ async function crearEventoCalendario(params) {
     modalidad: modalidad || "Virtual",
     summary,
     meet_link: meetLink,
+    notetaker_id: notetakerId,
+    grabacion_activada: !!notetakerId,
   };
 }
 
@@ -1017,6 +1032,19 @@ async function reagendarEvento(params) {
 
   const meetLink = evento.conferencing?.details?.url || null;
 
+  // Si es virtual y tiene meet link, invitar al Notetaker para grabar
+  let notetakerId = null;
+  if (modalidad === "Virtual" && meetLink) {
+    console.log(`  🎥 Invitando Notetaker para grabar la reunión reagendada...`);
+    try {
+      const notetaker = await inviteNotetaker(meetLink);
+      notetakerId = notetaker.id;
+      console.log(`  ✅ Notetaker invitado: ${notetakerId}`);
+    } catch (e) {
+      console.log(`  ⚠️ No se pudo invitar al Notetaker: ${e.message}`);
+    }
+  }
+
   // Guardar/actualizar cita en Supabase
   // Si cambió de asesor: crear nueva cita con estado "pendiente" (la anterior ya está marcada como "reagendada")
   // Si mismo asesor: actualizar la cita existente con estado "pendiente"
@@ -1055,6 +1083,8 @@ async function reagendarEvento(params) {
     duracion_minutos: duracionMin,
     modalidad: modalidad || "Virtual",
     meet_link: meetLink,
+    notetaker_id: notetakerId,
+    grabacion_activada: !!notetakerId,
     mensaje: cambioAsesor 
       ? `Evento reagendado con nuevo asesor: ${asesorNuevo.nombre} ${asesorNuevo.apellido}` 
       : "Evento reagendado correctamente",
