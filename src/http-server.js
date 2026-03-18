@@ -1124,7 +1124,7 @@ async function eliminarEvento(params) {
 // TOOL 5: Obtener Grabaciones de Reuniones
 // ============================================
 async function obtenerGrabaciones(params) {
-  const { contacto_id, empresa_id, grant_id, notetaker_id } = params;
+  const { contacto_id, empresa_id, grant_id, grant_ids, notetaker_id } = params;
   
   console.log(`  🎥 Obtener grabaciones`);
   
@@ -1155,41 +1155,81 @@ async function obtenerGrabaciones(params) {
     }
   }
   
-  // Si viene grant_id, listar todos los notetakers y obtener URLs de media automáticamente
+  // Función auxiliar para obtener grabaciones de un grant
+  async function obtenerGrabacionesDeGrant(grantId) {
+    const notetakers = await listNotetakers(grantId);
+    const notetakersDisponibles = notetakers.filter(n => n.state === 'available');
+    
+    return Promise.all(
+      notetakersDisponibles.map(async (n) => {
+        let media = null;
+        try {
+          media = await getNotetakerMedia(n.id);
+        } catch (e) {
+          console.log(`  ⚠️ No se pudo obtener media de ${n.id}: ${e.message}`);
+        }
+        
+        return {
+          grant_id: grantId,
+          notetaker_id: n.id,
+          meeting_link: n.meeting_link,
+          meeting_provider: n.meeting_provider,
+          estado: n.state,
+          join_time: n.join_time ? new Date(n.join_time * 1000).toISOString() : null,
+          media: media ? {
+            recording_url: media.recording || null,
+            recording_duration: media.recording_duration || null,
+            transcript_url: media.transcript || null,
+            summary_url: media.summary || null,
+            action_items_url: media.action_items || null,
+          } : null
+        };
+      })
+    );
+  }
+  
+  // Si viene grant_ids (array), procesar todos en paralelo
+  if (grant_ids && Array.isArray(grant_ids) && grant_ids.length > 0) {
+    console.log(`  📋 Procesando ${grant_ids.length} grants en paralelo...`);
+    try {
+      const resultadosPorGrant = await Promise.all(
+        grant_ids.map(async (gId) => {
+          try {
+            const grabaciones = await obtenerGrabacionesDeGrant(gId);
+            return { grant_id: gId, success: true, grabaciones };
+          } catch (e) {
+            console.log(`  ⚠️ Error en grant ${gId}: ${e.message}`);
+            return { grant_id: gId, success: false, error: e.message, grabaciones: [] };
+          }
+        })
+      );
+      
+      // Aplanar todas las grabaciones
+      const todasLasGrabaciones = resultadosPorGrant.flatMap(r => r.grabaciones);
+      
+      return {
+        success: true,
+        grants_procesados: grant_ids.length,
+        total_grabaciones: todasLasGrabaciones.length,
+        grabaciones: todasLasGrabaciones,
+        detalle_por_grant: resultadosPorGrant.map(r => ({
+          grant_id: r.grant_id,
+          success: r.success,
+          total: r.grabaciones.length,
+          error: r.error || null
+        })),
+        mensaje: "URLs válidas por 60 minutos. Archivos disponibles por 14 días."
+      };
+    } catch (e) {
+      return { error: `Error procesando grants: ${e.message}` };
+    }
+  }
+  
+  // Si viene grant_id individual
   if (grant_id) {
     console.log(`  📋 Listando notetakers del grant: ${grant_id}`);
     try {
-      const notetakers = await listNotetakers(grant_id);
-      
-      // Filtrar solo los que tienen grabaciones disponibles
-      const notetakersDisponibles = notetakers.filter(n => n.state === 'available');
-      
-      // Obtener media de cada notetaker en paralelo
-      const grabaciones = await Promise.all(
-        notetakersDisponibles.map(async (n) => {
-          let media = null;
-          try {
-            media = await getNotetakerMedia(n.id);
-          } catch (e) {
-            console.log(`  ⚠️ No se pudo obtener media de ${n.id}: ${e.message}`);
-          }
-          
-          return {
-            notetaker_id: n.id,
-            meeting_link: n.meeting_link,
-            meeting_provider: n.meeting_provider,
-            estado: n.state,
-            join_time: n.join_time ? new Date(n.join_time * 1000).toISOString() : null,
-            media: media ? {
-              recording_url: media.recording || null,
-              recording_duration: media.recording_duration || null,
-              transcript_url: media.transcript || null,
-              summary_url: media.summary || null,
-              action_items_url: media.action_items || null,
-            } : null
-          };
-        })
-      );
+      const grabaciones = await obtenerGrabacionesDeGrant(grant_id);
       
       return {
         success: true,
