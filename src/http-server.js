@@ -546,20 +546,61 @@ function calcularSlots(fecha, eventos, disponibilidad, duracionMinutos, timezone
     end: e.when?.end_time || 0,
   }));
 
+  // Calcular offset de timezone para convertir hora local a UTC
+  // Crear una fecha en la zona horaria del contacto y obtener el offset
+  const fechaStr = fecha.toISOString().split("T")[0]; // YYYY-MM-DD
+  
   for (const horario of horariosNormales) {
     const [inicioH, inicioM] = horario.inicio.split(":").map(Number);
     const [finH, finM] = horario.fin.split(":").map(Number);
     
-    let slotStart = new Date(fecha);
-    slotStart.setHours(inicioH, inicioM, 0, 0);
+    // Crear fecha/hora en la zona horaria del contacto usando string ISO
+    // Formato: YYYY-MM-DDTHH:MM:SS en la zona horaria local
+    let currentH = inicioH;
+    let currentM = inicioM;
     
-    const finBloque = new Date(fecha);
-    finBloque.setHours(finH, finM, 0, 0);
-
-    while (slotStart.getTime() + duracionMinutos * 60000 <= finBloque.getTime()) {
-      const slotEnd = new Date(slotStart.getTime() + duracionMinutos * 60000);
-      const startUnix = Math.floor(slotStart.getTime() / 1000);
-      const endUnix = Math.floor(slotEnd.getTime() / 1000);
+    while (currentH < finH || (currentH === finH && currentM < finM)) {
+      // Crear string de fecha/hora local
+      const localTimeStr = `${fechaStr}T${String(currentH).padStart(2, '0')}:${String(currentM).padStart(2, '0')}:00`;
+      
+      // Convertir a Date usando la zona horaria del contacto
+      // Usamos un truco: crear la fecha como si fuera local y calcular el offset
+      const localDate = new Date(localTimeStr);
+      
+      // Obtener el offset de la zona horaria del contacto
+      const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false
+      });
+      
+      // Calcular el offset comparando UTC con la hora en la zona horaria
+      const utcDate = new Date(localTimeStr + "Z"); // Interpretar como UTC
+      const tzParts = formatter.formatToParts(utcDate);
+      const getTzPart = (type) => tzParts.find(p => p.type === type)?.value || '0';
+      const tzHour = parseInt(getTzPart('hour'));
+      
+      // El offset es la diferencia entre la hora UTC y la hora en timezone
+      // Para America/Bogota (UTC-5): si UTC es 14:00, Bogota es 09:00, offset = -5
+      // Necesitamos: hora_local + offset_horas = hora_utc
+      // Para Bogota: 09:00 + 5 = 14:00 UTC
+      
+      // Calcular offset en minutos (America/Bogota = -300 minutos = -5 horas)
+      const testDate = new Date();
+      const utcTime = testDate.toLocaleString('en-US', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit', hour12: false });
+      const tzTime = testDate.toLocaleString('en-US', { timeZone: timezone, hour: '2-digit', minute: '2-digit', hour12: false });
+      const [utcH, utcM] = utcTime.split(':').map(Number);
+      const [tzH, tzM] = tzTime.split(':').map(Number);
+      const offsetMinutes = (utcH * 60 + utcM) - (tzH * 60 + tzM);
+      
+      // Crear la fecha UTC correcta: hora local + offset = hora UTC
+      const slotStartUTC = new Date(localTimeStr + "Z");
+      slotStartUTC.setMinutes(slotStartUTC.getMinutes() + offsetMinutes);
+      
+      const slotEndUTC = new Date(slotStartUTC.getTime() + duracionMinutos * 60000);
+      const startUnix = Math.floor(slotStartUTC.getTime() / 1000);
+      const endUnix = Math.floor(slotEndUTC.getTime() / 1000);
 
       const estaOcupado = ocupados.some(o => 
         (startUnix >= o.start && startUnix < o.end) || 
@@ -569,19 +610,24 @@ function calcularSlots(fecha, eventos, disponibilidad, duracionMinutos, timezone
 
       // Comparar usando Unix timestamps (universal)
       if (!estaOcupado && startUnix > ahoraUnix) {
-        const horaLocal = slotStart.toLocaleTimeString("es-CO", { 
+        const horaLocal = slotStartUTC.toLocaleTimeString("es-CO", { 
           timeZone: timezone, hour: "2-digit", minute: "2-digit", hour12: true 
         });
         slots.push({
-          inicio: slotStart.toISOString(),
-          fin: slotEnd.toISOString(),
+          inicio: slotStartUTC.toISOString(),
+          fin: slotEndUTC.toISOString(),
           hora: horaLocal,
           startUnix,
           endUnix,
         });
       }
 
-      slotStart = new Date(slotStart.getTime() + duracionMinutos * 60000);
+      // Avanzar al siguiente slot
+      currentM += duracionMinutos;
+      while (currentM >= 60) {
+        currentM -= 60;
+        currentH++;
+      }
     }
   }
 
