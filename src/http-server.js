@@ -23,7 +23,7 @@ console.log(`   NYLAS_API_URL: ${process.env.NYLAS_API_URL ? "✅" : "❌ FALTA"
 console.log(`   PORT: ${process.env.PORT || "3000 (default)"}`);
 
 import { supabase } from "./lib/supabase.js";
-import { getCalendars, getEvents, getFreeBusy, createEvent, updateEvent, deleteEvent, listNotetakers, getNotetaker, getNotetakerMedia } from "./lib/nylas.js";
+import { getCalendars, getEvents, getFreeBusy, createEvent, updateEvent, deleteEvent, listNotetakers, listAllNotetakers, getNotetaker, getNotetakerMedia } from "./lib/nylas.js";
 
 console.log("✅ Módulos importados correctamente");
 
@@ -1141,28 +1141,56 @@ async function obtenerGrabaciones(params) {
     console.log(`  📋 grant_id contenía múltiples valores, convertido a array: ${grant_ids.length} grants`);
   }
   
-  // Si no viene nada, obtener TODOS los grants de Supabase automáticamente
+  // Si no viene nada, obtener TODOS los notetakers directamente desde Nylas
   if (!notetaker_id && !grant_id && (!grant_ids || grant_ids.length === 0) && !contacto_id) {
-    console.log(`  📋 Sin parámetros, obteniendo todos los grants de Supabase...`);
+    console.log(`  📋 Sin parámetros, obteniendo todos los notetakers desde Nylas...`);
     
-    const { data: asesores, error: asesoresError } = await supabase
-      .from("wp_team_humano")
-      .select("id, nombre, apellido, email, grant_id")
-      .eq("is_active", true)
-      .not("grant_id", "is", null);
-    
-    if (asesoresError) {
-      return { error: `Error obteniendo asesores: ${asesoresError.message}` };
+    try {
+      const allNotetakers = await listAllNotetakers();
+      
+      // Filtrar solo los que tienen grabaciones disponibles
+      const notetakersDisponibles = allNotetakers.filter(n => n.state === 'available');
+      
+      console.log(`  📹 Encontrados ${notetakersDisponibles.length} notetakers con grabaciones de ${allNotetakers.length} total`);
+      
+      // Obtener media de cada notetaker en paralelo
+      const grabaciones = await Promise.all(
+        notetakersDisponibles.map(async (n) => {
+          let media = null;
+          try {
+            media = await getNotetakerMedia(n.id);
+          } catch (e) {
+            console.log(`  ⚠️ No se pudo obtener media de ${n.id}: ${e.message}`);
+          }
+          
+          return {
+            notetaker_id: n.id,
+            grant_id: n.grant_id || null,
+            meeting_link: n.meeting_link,
+            meeting_provider: n.meeting_provider,
+            estado: n.state,
+            join_time: n.join_time ? new Date(n.join_time * 1000).toISOString() : null,
+            media: media ? {
+              recording_url: media.recording || null,
+              recording_duration: media.recording_duration || null,
+              transcript_url: media.transcript || null,
+              summary_url: media.summary || null,
+              action_items_url: media.action_items || null,
+            } : null
+          };
+        })
+      );
+      
+      return {
+        success: true,
+        total_notetakers: allNotetakers.length,
+        total_con_grabacion: grabaciones.length,
+        grabaciones,
+        mensaje: "URLs válidas por 60 minutos. Archivos disponibles por 14 días."
+      };
+    } catch (e) {
+      return { error: `Error obteniendo notetakers: ${e.message}` };
     }
-    
-    // Filtrar solo grants válidos (UUIDs, no IDs de Slack)
-    const grantIdsValidos = asesores
-      .filter(a => a.grant_id && a.grant_id.includes('-') && a.grant_id.length > 30)
-      .map(a => a.grant_id);
-    
-    // Eliminar duplicados
-    grant_ids = [...new Set(grantIdsValidos)];
-    console.log(`  📋 Encontrados ${grant_ids.length} grants válidos de ${asesores.length} asesores`);
   }
   
   // Si viene notetaker_id específico, obtener solo ese

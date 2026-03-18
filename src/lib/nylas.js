@@ -142,12 +142,20 @@ export async function deleteEvent(grantId, calendarId, eventId) {
 
 /**
  * Lista los notetakers de un grant (reuniones grabadas)
- * @param {string} grantId - Grant ID del asesor
+ * @param {string} grantId - Grant ID del asesor (opcional)
  */
 export async function listNotetakers(grantId) {
   const response = await nylas.notetakers.list({
     identifier: grantId,
   });
+  return response.data;
+}
+
+/**
+ * Lista TODOS los notetakers de la aplicación (sin necesidad de grant)
+ */
+export async function listAllNotetakers() {
+  const response = await nylas.notetakers.list({});
   return response.data;
 }
 
