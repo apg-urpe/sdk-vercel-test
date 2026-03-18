@@ -1133,9 +1133,17 @@ async function eliminarEvento(params) {
 
   console.log(`  📤 Eliminando evento en Nylas...`);
   
-  await deleteEvent(asesor.grant_id, calendarId, event_id);
-
-  console.log(`  ✅ Evento eliminado`);
+  let eliminadoEnNylas = false;
+  try {
+    await deleteEvent(asesor.grant_id, calendarId, event_id);
+    console.log(`  ✅ Evento eliminado de Nylas`);
+    eliminadoEnNylas = true;
+  } catch (nylasError) {
+    console.log(`  ⚠️ Error al eliminar en Nylas: ${nylasError.message}`);
+    // Continuar con la cancelación en Supabase aunque falle en Nylas
+    // El evento puede no existir, haber sido creado con otra API, o ya estar eliminado
+    console.log(`  ℹ️ Continuando con cancelación en Supabase...`);
+  }
 
   // Actualizar estado de la cita en Supabase a "cancelada"
   await actualizarEstadoCita(event_id, "cancelada");
@@ -1146,7 +1154,10 @@ async function eliminarEvento(params) {
     contacto_id: contacto_id || cita.contacto_id,
     asesor: `${asesor.nombre} ${asesor.apellido}`,
     asesor_email: asesor.email,
-    mensaje: "Evento eliminado correctamente",
+    eliminado_en_nylas: eliminadoEnNylas,
+    mensaje: eliminadoEnNylas 
+      ? "Evento eliminado correctamente" 
+      : "Cita cancelada en Supabase (el evento ya no existía en el calendario)",
   };
 }
 
