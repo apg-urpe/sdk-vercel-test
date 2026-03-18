@@ -964,12 +964,16 @@ async function reagendarEvento(params) {
   let nuevoEventId = event_id;
 
   if (cambioAsesor && asesorActual?.grant_id) {
-    // Eliminar evento del asesor anterior
-    console.log(`  🗑️ Eliminando evento del asesor anterior...`);
+    // Marcar la cita anterior como "reagendada" en Supabase (NO borrar)
+    console.log(`  📝 Marcando cita anterior como reagendada...`);
+    await actualizarEstadoCita(event_id, "reagendada");
+    
+    // Eliminar evento del calendario del asesor anterior (solo en Nylas, no en BD)
+    console.log(`  🗑️ Eliminando evento del calendario anterior...`);
     try {
       await deleteEvent(asesorActual.grant_id, asesorActual.email, event_id);
     } catch (e) {
-      console.log(`  ⚠️ No se pudo eliminar evento anterior: ${e.message}`);
+      console.log(`  ⚠️ No se pudo eliminar evento del calendario: ${e.message}`);
     }
 
     // Crear nuevo evento con el nuevo asesor
@@ -1013,7 +1017,9 @@ async function reagendarEvento(params) {
 
   const meetLink = evento.conferencing?.details?.url || null;
 
-  // Actualizar cita en Supabase
+  // Guardar/actualizar cita en Supabase
+  // Si cambió de asesor: crear nueva cita con estado "pendiente" (la anterior ya está marcada como "reagendada")
+  // Si mismo asesor: actualizar la cita existente con estado "pendiente"
   await guardarCitaEnSupabase({
     contactoId: contacto_id || cita.contacto_id,
     empresaId: empresaIdFinal,
@@ -1024,7 +1030,7 @@ async function reagendarEvento(params) {
     titulo: summary || "Cita reagendada",
     ubicacion: meetLink || (modalidad === "Virtual" ? "Virtual" : "Presencial"),
     modalidad: modalidad || "Virtual",
-    estado: "reagendada"
+    estado: "pendiente"
   });
 
   // Si hubo cambio de asesor, actualizar en wp_contactos
