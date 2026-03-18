@@ -1141,6 +1141,30 @@ async function obtenerGrabaciones(params) {
     console.log(`  📋 grant_id contenía múltiples valores, convertido a array: ${grant_ids.length} grants`);
   }
   
+  // Si no viene nada, obtener TODOS los grants de Supabase automáticamente
+  if (!notetaker_id && !grant_id && (!grant_ids || grant_ids.length === 0) && !contacto_id) {
+    console.log(`  📋 Sin parámetros, obteniendo todos los grants de Supabase...`);
+    
+    const { data: asesores, error: asesoresError } = await supabase
+      .from("wp_team_humano")
+      .select("id, nombre, apellido, email, grant_id")
+      .eq("is_active", true)
+      .not("grant_id", "is", null);
+    
+    if (asesoresError) {
+      return { error: `Error obteniendo asesores: ${asesoresError.message}` };
+    }
+    
+    // Filtrar solo grants válidos (UUIDs, no IDs de Slack)
+    const grantIdsValidos = asesores
+      .filter(a => a.grant_id && a.grant_id.includes('-') && a.grant_id.length > 30)
+      .map(a => a.grant_id);
+    
+    // Eliminar duplicados
+    grant_ids = [...new Set(grantIdsValidos)];
+    console.log(`  📋 Encontrados ${grant_ids.length} grants válidos de ${asesores.length} asesores`);
+  }
+  
   // Si viene notetaker_id específico, obtener solo ese
   if (notetaker_id) {
     console.log(`  📹 Buscando notetaker específico: ${notetaker_id}`);
