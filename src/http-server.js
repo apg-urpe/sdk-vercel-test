@@ -1072,6 +1072,7 @@ async function reagendarEvento(params) {
     }
 
     console.log(`  📤 Actualizando evento en Nylas...`);
+    console.log(`  📤 startTime (Unix): ${startTime} = ${new Date(startTime * 1000).toISOString()}`);
     evento = await updateEvent(asesorNuevo.grant_id, calendarId, event_id, updateData);
   }
 
