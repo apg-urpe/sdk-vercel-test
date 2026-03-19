@@ -1509,6 +1509,157 @@ async function obtenerGrabaciones(params) {
 }
 
 // ============================================
+// TOOL 6: Obtener Grabación Específica con Datos Completos
+// ============================================
+async function obtenerGrabacionCompleta(params) {
+  const { notetaker_id, grant_id, event_id } = params;
+  
+  console.log(`  🎥 Obtener grabación completa`);
+  console.log(`  📹 Notetaker: ${notetaker_id}`);
+  console.log(`  🔑 Grant: ${grant_id}`);
+  console.log(`  📅 Event: ${event_id}`);
+  
+  if (!notetaker_id) {
+    return { error: "Se requiere notetaker_id" };
+  }
+  
+  // 1. Obtener datos del notetaker y media desde Nylas
+  let notetaker = null;
+  let media = null;
+  
+  try {
+    notetaker = await getNotetaker(notetaker_id);
+    console.log(`  ✅ Notetaker encontrado: ${notetaker.state}`);
+  } catch (e) {
+    console.log(`  ⚠️ No se pudo obtener notetaker: ${e.message}`);
+  }
+  
+  try {
+    media = await getNotetakerMedia(notetaker_id);
+    console.log(`  ✅ Media obtenida`);
+  } catch (e) {
+    console.log(`  ⚠️ No se pudo obtener media: ${e.message}`);
+  }
+  
+  // 2. Buscar asesor por grant_id en Supabase
+  let asesor = null;
+  if (grant_id) {
+    const { data: asesorData } = await supabase
+      .from("wp_team_humano")
+      .select("id, nombre, apellido, email, telefono, cargo, foto_url, grant_id")
+      .eq("grant_id", grant_id)
+      .single();
+    
+    if (asesorData) {
+      asesor = {
+        id: asesorData.id,
+        nombre: asesorData.nombre,
+        apellido: asesorData.apellido,
+        nombre_completo: `${asesorData.nombre} ${asesorData.apellido}`,
+        email: asesorData.email,
+        telefono: asesorData.telefono,
+        cargo: asesorData.cargo,
+        foto_url: asesorData.foto_url
+      };
+      console.log(`  ✅ Asesor encontrado: ${asesor.nombre_completo}`);
+    }
+  }
+  
+  // 3. Buscar cita por event_id en Supabase
+  let cita = null;
+  let contacto = null;
+  
+  if (event_id) {
+    // Limpiar event_id (puede venir con sufijo de fecha)
+    const eventIdBase = event_id.split('_')[0];
+    
+    const { data: citaData } = await supabase
+      .from("wp_citas")
+      .select("id, contacto_id, empresa_id, fecha_hora, duracion, titulo, ubicacion, estado, timezone_cliente, descripcion, metadata")
+      .or(`event_id.eq.${event_id},event_id.eq.${eventIdBase}`)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single();
+    
+    if (citaData) {
+      cita = {
+        id: citaData.id,
+        contacto_id: citaData.contacto_id,
+        empresa_id: citaData.empresa_id,
+        fecha_hora: citaData.fecha_hora,
+        duracion: citaData.duracion,
+        titulo: citaData.titulo,
+        ubicacion: citaData.ubicacion,
+        estado: citaData.estado,
+        timezone: citaData.timezone_cliente,
+        descripcion: citaData.descripcion,
+        metadata: citaData.metadata
+      };
+      console.log(`  ✅ Cita encontrada: ${cita.titulo}`);
+      
+      // 4. Buscar contacto
+      if (citaData.contacto_id) {
+        const { data: contactoData } = await supabase
+          .from("wp_contactos")
+          .select("id, nombre, apellido, email, telefono, origen, metadata")
+          .eq("id", citaData.contacto_id)
+          .single();
+        
+        if (contactoData) {
+          contacto = {
+            id: contactoData.id,
+            nombre: contactoData.nombre,
+            apellido: contactoData.apellido,
+            nombre_completo: `${contactoData.nombre} ${contactoData.apellido}`,
+            email: contactoData.email,
+            telefono: contactoData.telefono,
+            origen: contactoData.origen,
+            metadata: contactoData.metadata
+          };
+          console.log(`  ✅ Contacto encontrado: ${contacto.nombre_completo}`);
+        }
+      }
+    }
+  }
+  
+  return {
+    success: true,
+    notetaker_id,
+    grant_id,
+    event_id,
+    
+    // Datos del notetaker
+    notetaker: notetaker ? {
+      id: notetaker.id,
+      state: notetaker.state,
+      meeting_link: notetaker.meetingLink,
+      meeting_provider: notetaker.meetingProvider,
+      join_time: notetaker.joinTime ? new Date(notetaker.joinTime * 1000).toISOString() : null,
+    } : null,
+    
+    // URLs de media (válidas por 60 minutos)
+    media: media ? {
+      recording_url: media.recording || null,
+      recording_duration: media.recordingDuration || null,
+      transcript_url: media.transcript || null,
+      summary_url: media.summary || null,
+      action_items_url: media.actionItems || null,
+    } : null,
+    
+    // Datos del asesor
+    asesor,
+    
+    // Datos de la cita
+    cita,
+    
+    // Datos del contacto
+    contacto,
+    
+    mensaje: "URLs de media válidas por 60 minutos. Archivos disponibles por 14 días."
+  };
+}
+
+// ============================================
 // HTTP Server
 // ============================================
 function parseBody(req) {
@@ -1603,6 +1754,11 @@ const server = http.createServer(async (req, res) => {
         result = await obtenerGrabaciones(body);
         break;
       
+      case "/grabacion":
+        console.log(`[${requestId}] Ejecutando: obtenerGrabacionCompleta`);
+        result = await obtenerGrabacionCompleta(body);
+        break;
+      
       default:
         return sendJSON(res, { error: "Endpoint not found" }, 404);
     }
@@ -1632,4 +1788,5 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(`   POST /reagendar-evento`);
   console.log(`   POST /eliminar-evento`);
   console.log(`   POST /grabaciones`);
+  console.log(`   POST /grabacion`);
 });
