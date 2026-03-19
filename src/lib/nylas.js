@@ -1,5 +1,6 @@
 /**
  * Cliente de Nylas API v3 - Usando SDK oficial
+ * Soporta dos API keys para buscar en múltiples aplicaciones
  */
 import "dotenv/config";
 import Nylas from "nylas";
@@ -8,6 +9,12 @@ const nylas = new Nylas({
   apiKey: process.env.NYLAS_API_KEY,
   apiUri: process.env.NYLAS_API_URL || "https://api.us.nylas.com",
 });
+
+// Segunda instancia de Nylas para la segunda API key (si existe)
+const nylas2 = process.env.NYLAS_API_KEY_2 ? new Nylas({
+  apiKey: process.env.NYLAS_API_KEY_2,
+  apiUri: process.env.NYLAS_API_URL || "https://api.us.nylas.com",
+}) : null;
 
 /**
  * Obtiene la disponibilidad de un asesor usando Free/Busy
@@ -181,24 +188,52 @@ export async function listAllNotetakers() {
 
 /**
  * Obtiene un notetaker específico por ID
+ * Busca primero en la API principal, si no encuentra busca en la segunda
  * @param {string} notetakerId - ID del notetaker
  */
 export async function getNotetaker(notetakerId) {
-  const response = await nylas.notetakers.find({
-    notetakerId: notetakerId,
-  });
-  return response.data;
+  // Intentar con la primera API
+  try {
+    const response = await nylas.notetakers.find({
+      notetakerId: notetakerId,
+    });
+    return response.data;
+  } catch (e) {
+    // Si hay segunda API key, intentar con ella
+    if (nylas2) {
+      console.log(`  🔄 Notetaker no encontrado en API 1, buscando en API 2...`);
+      const response = await nylas2.notetakers.find({
+        notetakerId: notetakerId,
+      });
+      return response.data;
+    }
+    throw e;
+  }
 }
 
 /**
  * Obtiene los archivos de media (grabación, transcripción, etc) de un notetaker
+ * Busca primero en la API principal, si no encuentra busca en la segunda
  * @param {string} notetakerId - ID del notetaker
  */
 export async function getNotetakerMedia(notetakerId) {
-  const response = await nylas.notetakers.downloadMedia({
-    notetakerId: notetakerId,
-  });
-  return response.data;
+  // Intentar con la primera API
+  try {
+    const response = await nylas.notetakers.downloadMedia({
+      notetakerId: notetakerId,
+    });
+    return response.data;
+  } catch (e) {
+    // Si hay segunda API key, intentar con ella
+    if (nylas2) {
+      console.log(`  🔄 Media no encontrada en API 1, buscando en API 2...`);
+      const response = await nylas2.notetakers.downloadMedia({
+        notetakerId: notetakerId,
+      });
+      return response.data;
+    }
+    throw e;
+  }
 }
 
 /**
