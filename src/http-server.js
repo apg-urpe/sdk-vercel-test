@@ -1519,26 +1519,28 @@ async function obtenerGrabacionCompleta(params) {
   console.log(`  🔑 Grant: ${grant_id}`);
   console.log(`  📅 Event: ${event_id}`);
   
-  if (!notetaker_id) {
-    return { error: "Se requiere notetaker_id" };
+  if (!notetaker_id && !grant_id && !event_id) {
+    return { error: "Se requiere notetaker_id, grant_id o event_id" };
   }
   
   // 1. Obtener datos del notetaker y media desde Nylas
   let notetaker = null;
   let media = null;
   
-  try {
-    notetaker = await getNotetaker(notetaker_id);
-    console.log(`  ✅ Notetaker encontrado: ${notetaker.state}`);
-  } catch (e) {
-    console.log(`  ⚠️ No se pudo obtener notetaker: ${e.message}`);
-  }
-  
-  try {
-    media = await getNotetakerMedia(notetaker_id);
-    console.log(`  ✅ Media obtenida`);
-  } catch (e) {
-    console.log(`  ⚠️ No se pudo obtener media: ${e.message}`);
+  if (notetaker_id) {
+    try {
+      notetaker = await getNotetaker(notetaker_id);
+      console.log(`  ✅ Notetaker encontrado: ${notetaker.state}`);
+    } catch (e) {
+      console.log(`  ⚠️ No se pudo obtener notetaker: ${e.message}`);
+    }
+    
+    try {
+      media = await getNotetakerMedia(notetaker_id);
+      console.log(`  ✅ Media obtenida`);
+    } catch (e) {
+      console.log(`  ⚠️ No se pudo obtener media: ${e.message}`);
+    }
   }
   
   // 2. Buscar asesor por grant_id en Supabase
