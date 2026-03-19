@@ -66,19 +66,33 @@ export async function getEvents(grantId, calendarId, startTime, endTime) {
  * @param {object} eventData - Datos del evento
  */
 export async function createEvent(grantId, calendarId, eventData) {
+  const whenData = {
+    startTime: eventData.when.start_time,
+    endTime: eventData.when.end_time,
+  };
+  // Si se especifica timezone, agregarlo
+  if (eventData.when.start_timezone) {
+    whenData.startTimezone = eventData.when.start_timezone;
+    whenData.endTimezone = eventData.when.end_timezone || eventData.when.start_timezone;
+  }
+  
+  const requestBody = {
+    title: eventData.title,
+    description: eventData.description || "",
+    when: whenData,
+    participants: eventData.participants,
+    location: eventData.location,
+    conferencing: eventData.conferencing,
+  };
+  
+  // Agregar reminders si existen
+  if (eventData.reminders) {
+    requestBody.reminders = eventData.reminders;
+  }
+  
   const response = await nylas.events.create({
     identifier: grantId,
-    requestBody: {
-      title: eventData.title,
-      description: eventData.description || "",
-      when: {
-        startTime: eventData.when.start_time,
-        endTime: eventData.when.end_time,
-      },
-      participants: eventData.participants,
-      location: eventData.location,
-      conferencing: eventData.conferencing,
-    },
+    requestBody: requestBody,
     queryParams: {
       calendarId: calendarId,
     },
@@ -103,10 +117,16 @@ export async function updateEvent(grantId, calendarId, eventId, eventData) {
       startTime: eventData.when.start_time,
       endTime: eventData.when.end_time,
     };
+    // Si se especifica timezone, agregarlo
+    if (eventData.when.start_timezone) {
+      requestBody.when.startTimezone = eventData.when.start_timezone;
+      requestBody.when.endTimezone = eventData.when.end_timezone || eventData.when.start_timezone;
+    }
   }
   if (eventData.participants) requestBody.participants = eventData.participants;
   if (eventData.location) requestBody.location = eventData.location;
   if (eventData.conferencing) requestBody.conferencing = eventData.conferencing;
+  if (eventData.reminders) requestBody.reminders = eventData.reminders;
 
   const response = await nylas.events.update({
     identifier: grantId,

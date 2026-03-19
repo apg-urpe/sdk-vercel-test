@@ -825,39 +825,14 @@ async function crearEventoCalendario(params) {
   // Usar email del asesor como calendar_id
   const calendarId = asesor.email;
 
-  // Parsear la fecha en el timezone del contacto
-  // Si start viene sin timezone (ej: "2026-03-19T15:00:00"), interpretarla en el timezone del contacto
-  let startTime;
-  if (start.includes('Z') || start.includes('+') || /T\d{2}:\d{2}:\d{2}[+-]\d{2}/.test(start)) {
-    // Ya tiene timezone, usar directamente
-    startTime = Math.floor(new Date(start).getTime() / 1000);
-  } else {
-    // No tiene timezone, interpretar como hora local en el timezone del contacto
-    // Usar toLocaleString para obtener la fecha en UTC que corresponde a esa hora local
-    const localDateStr = start.replace('T', ' ');
-    const options = { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
-    
-    // Crear fecha asumiendo que es UTC, luego calcular qué hora UTC corresponde a esa hora local
-    const partes = start.split('T');
-    const [year, month, day] = partes[0].split('-').map(Number);
-    const [hour, minute, second] = (partes[1] || '00:00:00').split(':').map(n => parseInt(n) || 0);
-    
-    // Crear fecha en UTC con esos valores
-    const fechaComoUTC = Date.UTC(year, month - 1, day, hour, minute, second);
-    
-    // Obtener el offset del timezone en ese momento
-    const tempDate = new Date(fechaComoUTC);
-    const utcStr = tempDate.toLocaleString('en-US', { timeZone: 'UTC', hour12: false });
-    const tzStr = tempDate.toLocaleString('en-US', { timeZone: timezone, hour12: false });
-    const utcParsed = new Date(utcStr);
-    const tzParsed = new Date(tzStr);
-    const offsetMs = utcParsed.getTime() - tzParsed.getTime();
-    
-    // La hora que queremos es: fechaComoUTC + offset (porque queremos que 15:00 Bogotá sea 20:00 UTC)
-    startTime = Math.floor((fechaComoUTC + offsetMs) / 1000);
-    console.log(`  🕐 ${start} en ${timezone} = ${new Date(startTime * 1000).toISOString()}`);
-  }
+  // El start viene en UTC, parsearlo directamente
+  // Nylas usará el timezone para mostrar la hora correcta al usuario
+  const partes = start.split('T');
+  const [year, month, day] = partes[0].split('-').map(Number);
+  const [hour, minute, second] = (partes[1] || '00:00:00').split(':').map(n => parseInt(n) || 0);
+  const startTime = Math.floor(Date.UTC(year, month - 1, day, hour, minute, second) / 1000);
   const fechaInicio = new Date(startTime * 1000);
+  console.log(`  🕐 Start UTC: ${start} = ${fechaInicio.toISOString()}, se mostrará en ${timezone}`);
   const duracionMin = asesor.duracion_cita_minutos || 30;
   const endTime = startTime + (duracionMin * 60);
 
@@ -867,8 +842,22 @@ async function crearEventoCalendario(params) {
   const eventData = {
     title: summary,
     description: description || "",
-    when: { start_time: startTime, end_time: endTime },
+    when: { 
+      start_time: startTime, 
+      end_time: endTime,
+      start_timezone: timezone,
+      end_timezone: timezone
+    },
     participants: [{ email: attendeeEmail }],
+    reminders: {
+      useDefault: false,
+      overrides: [
+        { reminderMinutes: 1440, reminderMethod: "email" },   // 1 día antes
+        { reminderMinutes: 120, reminderMethod: "email" },    // 2 horas antes
+        { reminderMinutes: 30, reminderMethod: "popup" },     // 30 min antes
+        { reminderMinutes: 10, reminderMethod: "popup" }      // 10 min antes
+      ]
+    }
   };
 
   // Agregar conferencing si es virtual
@@ -1002,23 +991,14 @@ async function reagendarEvento(params) {
   // Si es el mismo asesor, solo actualizar
   const calendarId = asesorNuevo.email;
   
-  // Parsear la fecha en el timezone del contacto
-  let startTime;
-  if (start.includes('Z') || start.includes('+') || /T\d{2}:\d{2}:\d{2}[+-]\d{2}/.test(start)) {
-    startTime = Math.floor(new Date(start).getTime() / 1000);
-  } else {
-    const partes = start.split('T');
-    const [year, month, day] = partes[0].split('-').map(Number);
-    const [hour, minute, second] = (partes[1] || '00:00:00').split(':').map(n => parseInt(n) || 0);
-    const fechaComoUTC = Date.UTC(year, month - 1, day, hour, minute, second);
-    const tempDate = new Date(fechaComoUTC);
-    const utcStr = tempDate.toLocaleString('en-US', { timeZone: 'UTC', hour12: false });
-    const tzStr = tempDate.toLocaleString('en-US', { timeZone: timezone, hour12: false });
-    const offsetMs = new Date(utcStr).getTime() - new Date(tzStr).getTime();
-    startTime = Math.floor((fechaComoUTC + offsetMs) / 1000);
-    console.log(`  🕐 ${start} en ${timezone} = ${new Date(startTime * 1000).toISOString()}`);
-  }
+  // El start viene en UTC, parsearlo directamente
+  // Nylas usará el timezone para mostrar la hora correcta al usuario
+  const partes = start.split('T');
+  const [year, month, day] = partes[0].split('-').map(Number);
+  const [hour, minute, second] = (partes[1] || '00:00:00').split(':').map(n => parseInt(n) || 0);
+  const startTime = Math.floor(Date.UTC(year, month - 1, day, hour, minute, second) / 1000);
   const fechaInicio = new Date(startTime * 1000);
+  console.log(`  🕐 Start UTC: ${start} = ${fechaInicio.toISOString()}, se mostrará en ${timezone}`);
   const duracionMin = Duracion_minutos ? parseInt(Duracion_minutos) : (asesorNuevo.duracion_cita_minutos || 30);
   const endTime = startTime + (duracionMin * 60);
 
@@ -1043,8 +1023,22 @@ async function reagendarEvento(params) {
     const eventData = {
       title: summary || "Cita reagendada",
       description: description || "",
-      when: { start_time: startTime, end_time: endTime },
+      when: { 
+        start_time: startTime, 
+        end_time: endTime,
+        start_timezone: timezone,
+        end_timezone: timezone
+      },
       participants: [{ email: attendeeEmail }],
+      reminders: {
+        useDefault: false,
+        overrides: [
+          { reminderMinutes: 1440, reminderMethod: "email" },
+          { reminderMinutes: 120, reminderMethod: "email" },
+          { reminderMinutes: 30, reminderMethod: "popup" },
+          { reminderMinutes: 10, reminderMethod: "popup" }
+        ]
+      }
     };
 
     if (modalidad === "Virtual") {
@@ -1058,7 +1052,21 @@ async function reagendarEvento(params) {
   } else {
     // Mismo asesor, solo actualizar
     const updateData = {
-      when: { start_time: startTime, end_time: endTime },
+      when: { 
+        start_time: startTime, 
+        end_time: endTime,
+        start_timezone: timezone,
+        end_timezone: timezone
+      },
+      reminders: {
+        useDefault: false,
+        overrides: [
+          { reminderMinutes: 1440, reminderMethod: "email" },
+          { reminderMinutes: 120, reminderMethod: "email" },
+          { reminderMinutes: 30, reminderMethod: "popup" },
+          { reminderMinutes: 10, reminderMethod: "popup" }
+        ]
+      }
     };
     
     if (summary) updateData.title = summary;
