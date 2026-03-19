@@ -825,7 +825,23 @@ async function crearEventoCalendario(params) {
   // Usar email del asesor como calendar_id
   const calendarId = asesor.email;
 
-  const fechaInicio = new Date(start);
+  // Parsear la fecha en el timezone del contacto
+  // Si start viene sin timezone (ej: "2026-03-19T11:00:00"), interpretarla en el timezone del contacto
+  let fechaInicio;
+  if (start.includes('Z') || start.includes('+') || /\d{2}:\d{2}:\d{2}-\d{2}/.test(start)) {
+    // Ya tiene timezone, usar directamente
+    fechaInicio = new Date(start);
+  } else {
+    // No tiene timezone, interpretar en el timezone del contacto
+    // Calcular el offset del timezone
+    const utcDate = new Date(start + 'Z');
+    const tzDate = new Date(utcDate.toLocaleString('en-US', { timeZone: timezone }));
+    const offset = utcDate.getTime() - tzDate.getTime();
+    
+    // Aplicar el offset inverso para obtener el timestamp correcto
+    fechaInicio = new Date(new Date(start).getTime() - offset);
+    console.log(`  🕐 Fecha interpretada en ${timezone}: ${fechaInicio.toISOString()}`);
+  }
   const startTime = Math.floor(fechaInicio.getTime() / 1000);
   const duracionMin = asesor.duracion_cita_minutos || 30;
   const endTime = startTime + (duracionMin * 60);
@@ -970,7 +986,18 @@ async function reagendarEvento(params) {
   // Si hay cambio de asesor, eliminar evento anterior y crear nuevo
   // Si es el mismo asesor, solo actualizar
   const calendarId = asesorNuevo.email;
-  const fechaInicio = new Date(start);
+  
+  // Parsear la fecha en el timezone del contacto
+  let fechaInicio;
+  if (start.includes('Z') || start.includes('+') || /\d{2}:\d{2}:\d{2}-\d{2}/.test(start)) {
+    fechaInicio = new Date(start);
+  } else {
+    const utcDate = new Date(start + 'Z');
+    const tzDate = new Date(utcDate.toLocaleString('en-US', { timeZone: timezone }));
+    const offset = utcDate.getTime() - tzDate.getTime();
+    fechaInicio = new Date(new Date(start).getTime() - offset);
+    console.log(`  🕐 Fecha interpretada en ${timezone}: ${fechaInicio.toISOString()}`);
+  }
   const startTime = Math.floor(fechaInicio.getTime() / 1000);
   const duracionMin = Duracion_minutos ? parseInt(Duracion_minutos) : (asesorNuevo.duracion_cita_minutos || 30);
   const endTime = startTime + (duracionMin * 60);

@@ -188,11 +188,11 @@ export async function getNotetakerMedia(notetakerId) {
  */
 export async function inviteNotetaker(meetingLink, options = {}) {
   const requestBody = {
-    meeting_link: meetingLink,
+    meetingLink: meetingLink,
     ...options
   };
   
-  const response = await nylas.notetakers.invite({
+  const response = await nylas.notetakers.create({
     requestBody: requestBody,
   });
   return response.data;
