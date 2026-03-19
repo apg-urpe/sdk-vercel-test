@@ -839,23 +839,43 @@ async function crearEventoCalendario(params) {
   // Generar link de Google Meet si es virtual
   const esVirtual = modalidad === "Virtual";
   
+  // Extraer nombre del contacto del summary (formato: "🗓️ | Nombre | Empresa | ...")
+  const nombreContacto = summary?.split('|')[1]?.trim() || "Invitado";
+  
+  // Calcular hora local para mostrar en descripción
+  const horaLocal = fechaInicio.toLocaleString('es-CO', { 
+    timeZone: timezone, 
+    hour: '2-digit', 
+    minute: '2-digit',
+    hour12: true 
+  });
+  
+  // Agregar hora local a la descripción si no está incluida
+  let descFinal = description || "";
+  if (!descFinal.includes("Hora:")) {
+    descFinal += `\n- Hora: ${horaLocal} hora Colombia (${timezone})`;
+  }
+  
   const eventData = {
     title: summary,
-    description: description || "",
+    description: descFinal,
     when: { 
       start_time: startTime, 
       end_time: endTime,
       start_timezone: timezone,
       end_timezone: timezone
     },
-    participants: [{ email: attendeeEmail }],
+    participants: [
+      { name: nombreContacto, email: attendeeEmail, status: "yes" },
+      { name: `${asesor.nombre} ${asesor.apellido}`, email: asesor.email, status: "yes" }
+    ],
     reminders: {
       useDefault: false,
       overrides: [
-        { reminderMinutes: 1440, reminderMethod: "email" },   // 1 día antes
-        { reminderMinutes: 120, reminderMethod: "email" },    // 2 horas antes
-        { reminderMinutes: 30, reminderMethod: "popup" },     // 30 min antes
-        { reminderMinutes: 10, reminderMethod: "popup" }      // 10 min antes
+        { reminderMinutes: 1440, reminderMethod: "email" },
+        { reminderMinutes: 120, reminderMethod: "email" },
+        { reminderMinutes: 30, reminderMethod: "popup" },
+        { reminderMinutes: 10, reminderMethod: "popup" }
       ]
     }
   };
@@ -1002,6 +1022,23 @@ async function reagendarEvento(params) {
   const duracionMin = Duracion_minutos ? parseInt(Duracion_minutos) : (asesorNuevo.duracion_cita_minutos || 30);
   const endTime = startTime + (duracionMin * 60);
 
+  // Extraer nombre del contacto del summary (formato: "🗓️ | Nombre | Empresa | ...")
+  const nombreContacto = summary?.split('|')[1]?.trim() || "Invitado";
+  
+  // Calcular hora local para mostrar en descripción
+  const horaLocal = fechaInicio.toLocaleString('es-CO', { 
+    timeZone: timezone, 
+    hour: '2-digit', 
+    minute: '2-digit',
+    hour12: true 
+  });
+  
+  // Agregar hora local a la descripción si no está incluida
+  let descFinal = description || "";
+  if (!descFinal.includes("Hora:")) {
+    descFinal += `\n- Hora: ${horaLocal} hora Colombia (${timezone})`;
+  }
+
   let evento;
   let nuevoEventId = event_id;
 
@@ -1022,14 +1059,17 @@ async function reagendarEvento(params) {
     console.log(`  📤 Creando evento con nuevo asesor...`);
     const eventData = {
       title: summary || "Cita reagendada",
-      description: description || "",
+      description: descFinal,
       when: { 
         start_time: startTime, 
         end_time: endTime,
         start_timezone: timezone,
         end_timezone: timezone
       },
-      participants: [{ email: attendeeEmail }],
+      participants: [
+        { name: nombreContacto, email: attendeeEmail, status: "yes" },
+        { name: `${asesorNuevo.nombre} ${asesorNuevo.apellido}`, email: asesorNuevo.email, status: "yes" }
+      ],
       reminders: {
         useDefault: false,
         overrides: [
@@ -1070,8 +1110,13 @@ async function reagendarEvento(params) {
     };
     
     if (summary) updateData.title = summary;
-    if (description) updateData.description = description;
-    if (attendeeEmail) updateData.participants = [{ email: attendeeEmail }];
+    if (descFinal) updateData.description = descFinal;
+    if (attendeeEmail) {
+      updateData.participants = [
+        { name: nombreContacto, email: attendeeEmail, status: "yes" },
+        { name: `${asesorNuevo.nombre} ${asesorNuevo.apellido}`, email: asesorNuevo.email, status: "yes" }
+      ];
+    }
     
     if (modalidad === "Virtual") {
       updateData.conferencing = { provider: "Google Meet", autocreate: {} };
