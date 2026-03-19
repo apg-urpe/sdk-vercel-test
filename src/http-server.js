@@ -826,23 +826,38 @@ async function crearEventoCalendario(params) {
   const calendarId = asesor.email;
 
   // Parsear la fecha en el timezone del contacto
-  // Si start viene sin timezone (ej: "2026-03-19T11:00:00"), interpretarla en el timezone del contacto
-  let fechaInicio;
-  if (start.includes('Z') || start.includes('+') || /\d{2}:\d{2}:\d{2}-\d{2}/.test(start)) {
+  // Si start viene sin timezone (ej: "2026-03-19T15:00:00"), interpretarla en el timezone del contacto
+  let startTime;
+  if (start.includes('Z') || start.includes('+') || /T\d{2}:\d{2}:\d{2}[+-]\d{2}/.test(start)) {
     // Ya tiene timezone, usar directamente
-    fechaInicio = new Date(start);
+    startTime = Math.floor(new Date(start).getTime() / 1000);
   } else {
-    // No tiene timezone, interpretar en el timezone del contacto
-    // Calcular el offset del timezone
-    const utcDate = new Date(start + 'Z');
-    const tzDate = new Date(utcDate.toLocaleString('en-US', { timeZone: timezone }));
-    const offset = utcDate.getTime() - tzDate.getTime();
+    // No tiene timezone, interpretar como hora local en el timezone del contacto
+    // Usar toLocaleString para obtener la fecha en UTC que corresponde a esa hora local
+    const localDateStr = start.replace('T', ' ');
+    const options = { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
     
-    // Aplicar el offset inverso para obtener el timestamp correcto
-    fechaInicio = new Date(new Date(start).getTime() - offset);
-    console.log(`  🕐 Fecha interpretada en ${timezone}: ${fechaInicio.toISOString()}`);
+    // Crear fecha asumiendo que es UTC, luego calcular qué hora UTC corresponde a esa hora local
+    const partes = start.split('T');
+    const [year, month, day] = partes[0].split('-').map(Number);
+    const [hour, minute, second] = (partes[1] || '00:00:00').split(':').map(n => parseInt(n) || 0);
+    
+    // Crear fecha en UTC con esos valores
+    const fechaComoUTC = Date.UTC(year, month - 1, day, hour, minute, second);
+    
+    // Obtener el offset del timezone en ese momento
+    const tempDate = new Date(fechaComoUTC);
+    const utcStr = tempDate.toLocaleString('en-US', { timeZone: 'UTC', hour12: false });
+    const tzStr = tempDate.toLocaleString('en-US', { timeZone: timezone, hour12: false });
+    const utcParsed = new Date(utcStr);
+    const tzParsed = new Date(tzStr);
+    const offsetMs = utcParsed.getTime() - tzParsed.getTime();
+    
+    // La hora que queremos es: fechaComoUTC + offset (porque queremos que 15:00 Bogotá sea 20:00 UTC)
+    startTime = Math.floor((fechaComoUTC + offsetMs) / 1000);
+    console.log(`  🕐 ${start} en ${timezone} = ${new Date(startTime * 1000).toISOString()}`);
   }
-  const startTime = Math.floor(fechaInicio.getTime() / 1000);
+  const fechaInicio = new Date(startTime * 1000);
   const duracionMin = asesor.duracion_cita_minutos || 30;
   const endTime = startTime + (duracionMin * 60);
 
@@ -988,17 +1003,22 @@ async function reagendarEvento(params) {
   const calendarId = asesorNuevo.email;
   
   // Parsear la fecha en el timezone del contacto
-  let fechaInicio;
-  if (start.includes('Z') || start.includes('+') || /\d{2}:\d{2}:\d{2}-\d{2}/.test(start)) {
-    fechaInicio = new Date(start);
+  let startTime;
+  if (start.includes('Z') || start.includes('+') || /T\d{2}:\d{2}:\d{2}[+-]\d{2}/.test(start)) {
+    startTime = Math.floor(new Date(start).getTime() / 1000);
   } else {
-    const utcDate = new Date(start + 'Z');
-    const tzDate = new Date(utcDate.toLocaleString('en-US', { timeZone: timezone }));
-    const offset = utcDate.getTime() - tzDate.getTime();
-    fechaInicio = new Date(new Date(start).getTime() - offset);
-    console.log(`  🕐 Fecha interpretada en ${timezone}: ${fechaInicio.toISOString()}`);
+    const partes = start.split('T');
+    const [year, month, day] = partes[0].split('-').map(Number);
+    const [hour, minute, second] = (partes[1] || '00:00:00').split(':').map(n => parseInt(n) || 0);
+    const fechaComoUTC = Date.UTC(year, month - 1, day, hour, minute, second);
+    const tempDate = new Date(fechaComoUTC);
+    const utcStr = tempDate.toLocaleString('en-US', { timeZone: 'UTC', hour12: false });
+    const tzStr = tempDate.toLocaleString('en-US', { timeZone: timezone, hour12: false });
+    const offsetMs = new Date(utcStr).getTime() - new Date(tzStr).getTime();
+    startTime = Math.floor((fechaComoUTC + offsetMs) / 1000);
+    console.log(`  🕐 ${start} en ${timezone} = ${new Date(startTime * 1000).toISOString()}`);
   }
-  const startTime = Math.floor(fechaInicio.getTime() / 1000);
+  const fechaInicio = new Date(startTime * 1000);
   const duracionMin = Duracion_minutos ? parseInt(Duracion_minutos) : (asesorNuevo.duracion_cita_minutos || 30);
   const endTime = startTime + (duracionMin * 60);
 
