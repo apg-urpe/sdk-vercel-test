@@ -61,6 +61,7 @@ async function getAsesorById(asesorId) {
     .select("id, nombre, apellido, email, grant_id, timezone, duracion_cita_minutos, disponibilidad")
     .eq("id", asesorId)
     .eq("is_active", true)
+    .eq("is_actestan", true)
     .single();
   
   if (asesorError) {
@@ -77,7 +78,8 @@ async function getAsesoresByEmpresaId(empresaId) {
     .from("wp_team_humano")
     .select("id, nombre, apellido, email, grant_id, timezone, duracion_cita_minutos, disponibilidad")
     .eq("empresa_id", empresaId)
-    .eq("is_active", true);
+    .eq("is_active", true)
+    .eq("is_actestan", true);
   
   if (asesoresError) {
     console.log(`  ❌ Error buscando asesores: ${asesoresError.message}`);
@@ -138,6 +140,7 @@ async function getAsesorFijoDeContacto(contactoId) {
     .select("id, nombre, apellido, email, grant_id, timezone, duracion_cita_minutos, disponibilidad")
     .eq("id", citaRealizada.team_humano_id)
     .eq("is_active", true)
+    .eq("is_actestan", true)
     .single();
   
   if (!asesor || !asesor.grant_id || asesor.grant_id === "Solicitud enviada") {
@@ -487,6 +490,7 @@ async function getAsesorByContactoId(contactoId, requireTestMode = false) {
     .select("id, nombre, apellido, email, grant_id, timezone, duracion_cita_minutos, disponibilidad")
     .eq("id", asesorId)
     .eq("is_active", true)
+    .eq("is_actestan", true)
     .single();
   
   if (asesorError) {
